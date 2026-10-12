@@ -88,11 +88,17 @@ class Omlx < Formula
     pip_install = [libexec/"bin/pip", "install", *pip_flags, "--no-binary", no_binary]
 
     if build.with?("custom-kernel")
-      # `metal` ships with Xcode, not the Command Line Tools.
-      unless quiet_system("/usr/bin/xcrun", "-f", "metal")
+      # `metal` ships with Xcode, not the Command Line Tools. Looking the path
+      # up is not enough: full Xcode installs a stub `metal` even when the Metal
+      # Toolchain component was never downloaded, so `xcrun -f metal` succeeds
+      # and the kernel build only fails minutes later inside CMake with
+      # `cannot execute tool 'metal' due to missing Metal Toolchain`. Ask the
+      # compiler itself, which is what tells the two cases apart.
+      unless quiet_system("/usr/bin/xcrun", "metal", "--version")
         odie <<~EOS
-          --with-custom-kernel requires the Metal compiler, but `xcrun -f metal` found none.
-          It ships with full Xcode, and on current Xcode versions is a separate component:
+          --with-custom-kernel requires a working Metal compiler, but none was found.
+          Full Xcode installs one, and on current Xcode versions it is a separate
+          component that must be downloaded:
 
             xcodebuild -downloadComponent MetalToolchain
 
