@@ -1,0 +1,99 @@
+name: omlx downstream
+
+# Keeps this tap on the newest jundot/omlx release.
+#
+# Formula/omlx.rb is the upstream formula with patches/*.patch applied, so the
+# tap carries the extras options and the Metal-probe fix on every release
+# instead of on one hard-coded tag. The job takes the formula from the tagged
+# tree, applies the patch, points url/sha256 at that tag, and opens a PR when
+# something moved. A patch that no longer applies fails the run with the
+# conflicting hunk, which is the signal to rebase the patch by hand.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream tag to build the tap formula from (default: newest release)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: omlx-downstream
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM: jundot/omlx
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the newest upstream release
+        id: upstream
+        run: |
+          set -euo pipefail
+          tag='${{ inputs.tag }}'
+          if [ -z "$tag" ]; then
+            tag=$(gh api "repos/$UPSTREAM/releases/latest" --jq .tag_name)
+          fi
+          git fetch --no-tags --depth=1 "https://github.com/$UPSTREAM" "refs/tags/$tag:refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build the patched formula (upstream ${{ steps.upstream.outputs.tag }})
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git show "$TAG:Formula/omlx.rb" > Formula/omlx.rb
+          for patch in patches/*.patch; do
+            echo "applying $patch"
+            git apply --3way --whitespace=nowarn "$patch"
+          done
+          url="https://github.com/$UPSTREAM/archive/refs/tags/$TAG.tar.gz"
+          sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          ruby -e '
+            path = ARGV[0]
+            body = File.read(path)
+            abort "url line not found" unless body.sub!(/^  url .*$/, %Q{  url "#{ARGV[1]}"})
+            abort "sha256 line not found" unless body.sub!(/^  sha256 .*$/, %Q{  sha256 "#{ARGV[2]}"})
+            File.write(path, body)
+          ' Formula/omlx.rb "$url" "$sha"
+
+      - name: Check the formula parses
+        run: ruby -c Formula/omlx.rb
+
+      - name: Open a pull request when something moved
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "already on $TAG"
+            exit 0
+          fi
+          version=${TAG#v}
+          branch="omlx-downstream/$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git commit -am "omlx $version"
+          git push --force-with-lease -u origin "$branch"
+          if gh pr view "$branch" >/dev/null 2>&1; then
+            echo "PR for $branch already open"
+            exit 0
+          fi
+          gh pr create --base "$GITHUB_REF_NAME" --head "$branch" \
+            --title "omlx $version" \
+            --body "Tracks upstream [$TAG](https://github.com/$UPSTREAM/releases/tag/$TAG): formula from the tagged tree, \`patches/*.patch\` applied, url/sha256 repointed.
+
+          Build it with \`brew upgrade dbydd/omlx/omlx --with-custom-kernel --with-mcp --with-cluster --with-modelscope\`."
