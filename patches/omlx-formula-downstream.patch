@@ -1,8 +1,8 @@
 diff --git a/Formula/omlx.rb b/Formula/omlx.rb
-index fb4e8d9..5386990 100644
+index e14b052..8742e35 100644
 --- a/Formula/omlx.rb
 +++ b/Formula/omlx.rb
-@@ -12,6 +12,10 @@ class Omlx < Formula
+@@ -10,6 +10,10 @@ class Omlx < Formula
    option "with-custom-kernel",
           "Build native custom kernels for Bonsai, GLM-5.2, MiniMax M3 and Qwen3.5/3.6/4 acceleration"
    option "with-grammar", "Install xgrammar for structured output (requires torch, ~2GB)"
@@ -13,29 +13,7 @@ index fb4e8d9..5386990 100644
  
    depends_on "rust" => :build
    depends_on arch: :arm64
-@@ -88,11 +92,17 @@ class Omlx < Formula
-     pip_install = [libexec/"bin/pip", "install", *pip_flags, "--no-binary", no_binary]
- 
-     if build.with?("custom-kernel")
--      # `metal` ships with Xcode, not the Command Line Tools.
--      unless quiet_system("/usr/bin/xcrun", "-f", "metal")
-+      # `metal` ships with Xcode, not the Command Line Tools. Looking the path
-+      # up is not enough: full Xcode installs a stub `metal` even when the Metal
-+      # Toolchain component was never downloaded, so `xcrun -f metal` succeeds
-+      # and the kernel build only fails minutes later inside CMake with
-+      # `cannot execute tool 'metal' due to missing Metal Toolchain`. Ask the
-+      # compiler itself, which is what tells the two cases apart.
-+      unless quiet_system("/usr/bin/xcrun", "metal", "--version")
-         odie <<~EOS
--          --with-custom-kernel requires the Metal compiler, but `xcrun -f metal` found none.
--          It ships with full Xcode, and on current Xcode versions is a separate component:
-+          --with-custom-kernel requires a working Metal compiler, but none was found.
-+          Full Xcode installs one, and on current Xcode versions it is a separate
-+          component that must be downloaded:
- 
-             xcodebuild -downloadComponent MetalToolchain
- 
-@@ -114,8 +124,11 @@ class Omlx < Formula
+@@ -112,8 +116,11 @@ class Omlx < Formula
        ENV.append "CMAKE_ARGS", "-DPython_EXECUTABLE=#{libexec}/bin/python"
      end
  

@@ -5,6 +5,7 @@ class Omlx < Formula
   homepage "https://github.com/jundot/omlx"
   url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.1.dev1.tar.gz"
   sha256 "cd83e8ecfaecb95407c3e48c793f639454b9bcddf002235fa0b1a2e4c05528a6"
+  version "0.7.1.dev1"
   license "Apache-2.0"
 
   head "https://github.com/jundot/omlx.git", branch: "main"

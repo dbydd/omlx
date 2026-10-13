@@ -61,13 +61,29 @@ jobs:
           done
           url="https://github.com/$UPSTREAM/archive/refs/tags/$TAG.tar.gz"
           sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          # Homebrew's URL version parser reads tags such as v0.7.1.dev1 as
+          # "1", which sorts above every real release. State the version when
+          # the tag has a prerelease suffix.
+          version=${TAG#v}
+          if printf '%s' "$version" | grep -Evq '^[0-9]+(\.[0-9]+)*$'; then
+            version_prefix="  version \"$version\"\n"
+          else
+            version_prefix=""
+          fi
           ruby -e '
-            path = ARGV[0]
+            path, url, sha, prefix = ARGV
             body = File.read(path)
-            abort "url line not found" unless body.sub!(/^  url .*$/, %Q{  url "#{ARGV[1]}"})
-            abort "sha256 line not found" unless body.sub!(/^  sha256 .*$/, %Q{  sha256 "#{ARGV[2]}"})
+            abort "url line not found" unless body.sub!(/^  url .*$/, %Q{  url "#{url}"})
+            abort "sha256 line not found" unless body.sub!(/^  sha256 .*$/, %Q{  sha256 "#{sha}"})
+            unless prefix.empty?
+              # Insert after the sha256 line. A block beats a "\\1" backreference,
+              # which a shell-quoted script turns into an octal escape.
+              m = body.match(/^  sha256 .*\n/)
+              abort "sha256 line not found" unless m
+              body.insert(m.end(0), prefix)
+            end
             File.write(path, body)
-          ' Formula/omlx.rb "$url" "$sha"
+          ' Formula/omlx.rb "$url" "$sha" "$(printf "$version_prefix")"
 
       - name: Check the formula parses
         run: ruby -c Formula/omlx.rb
