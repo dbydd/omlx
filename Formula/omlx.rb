@@ -3,8 +3,9 @@ class Omlx < Formula
 
   desc "LLM inference server optimized for Apple Silicon"
   homepage "https://github.com/jundot/omlx"
-  url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.0.tar.gz"
-  sha256 "cd58f72b7390896d8484ae0056cb8f578e21b18b448a5199caa023118a215c83"
+  url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.1.dev1.tar.gz"
+  sha256 "cd83e8ecfaecb95407c3e48c793f639454b9bcddf002235fa0b1a2e4c05528a6"
+  version "0.7.1.dev1"
   license "Apache-2.0"
 
   head "https://github.com/jundot/omlx.git", branch: "main"
@@ -12,6 +13,10 @@ class Omlx < Formula
   option "with-custom-kernel",
          "Build native custom kernels for Bonsai, GLM-5.2, MiniMax M3 and Qwen3.5/3.6/4 acceleration"
   option "with-grammar", "Install xgrammar for structured output (requires torch, ~2GB)"
+  option "with-mcp", "Install the MCP server extra (mcp)"
+  option "with-cluster", "Install mDNS peer discovery for clusters (zeroconf)"
+  option "with-modelscope", "Install ModelScope model downloads (modelscope)"
+  option "with-paroquant", "Install the ParoQuant runtime loader (paroquant)"
 
   depends_on "rust" => :build
   depends_on arch: :arm64
@@ -114,8 +119,11 @@ class Omlx < Formula
       ENV.append "CMAKE_ARGS", "-DPython_EXECUTABLE=#{libexec}/bin/python"
     end
 
-    # Install omlx (with optional grammar extra for structured output)
-    install_spec = build.with?("grammar") ? "#{buildpath}[grammar]" : buildpath.to_s
+    # Install omlx with the extras the options above ask for. Each option
+    # mirrors an omlx optional-dependencies group, so a Homebrew install can
+    # carry the same set a pip install would (`pip install 'omlx[mcp,modelscope]'`).
+    extras = %w[grammar mcp cluster modelscope paroquant].select { |extra| build.with?(extra) }
+    install_spec = extras.empty? ? buildpath.to_s : "#{buildpath}[#{extras.join(",")}]"
     system(*pip_install, install_spec)
 
     if build.with?("custom-kernel")
