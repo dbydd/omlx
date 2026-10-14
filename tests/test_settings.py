@@ -108,6 +108,8 @@ class TestServerSettings:
             "max_request_body_size": "512MB",
             "max_image_side_length": 2048,
             "gpu_keep_warm_interval": 0.5,
+            "battery_poll_interval": 0.0,
+            "battery_idle_seconds": 120.0,
         }
 
     def test_qwen4_decode_setting_round_trip(self):
