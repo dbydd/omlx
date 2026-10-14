@@ -87,8 +87,14 @@ jobs:
           if [ -n "$inject" ]; then
             ruby -e '
               body = File.read("Formula/omlx.rb")
-              block = ARGV[0].gsub(/\\n/, "\n")
-              abort "license line not found" unless body.sub!(/(^  license .*\n)/, "\\1" + block)
+              # printf already turned the \n escapes into real newlines.
+              block = ARGV[0]
+              # Insert after the license line. A block beats a "\\1" backreference,
+              # which a shell-quoted script turns into an octal escape.
+              m = body.match(/^  license .*\n/)
+              abort "license line not found" unless m
+              # $(...) strips the trailing newline printf produced.
+              body.insert(m.end(0), block.end_with?("\n") ? block : block + "\n")
               File.write("Formula/omlx.rb", body)
             ' "$(printf "$inject")"
           fi
@@ -99,7 +105,7 @@ jobs:
           # the tag has a prerelease suffix.
           version=${TAG#v}
           if printf '%s' "$version" | grep -Evq '^[0-9]+(\.[0-9]+)*$'; then
-            version_prefix="  version \"$version\"\n"
+            version_prefix="  version \"$version\""
           else
             version_prefix=""
           fi
@@ -110,12 +116,12 @@ jobs:
             abort "sha256 line not found" unless body.sub!(/^  sha256 .*$/, %Q{  sha256 "#{sha}"})
             unless prefix.empty?
               # Drop any version line the tag already carries, then insert
-              # after sha256. A block beats a "\\1" backreference, which a
-              # shell-quoted script turns into an octal escape.
+              # after sha256, with its own newline: $(...) strips a trailing
+              # one, so the license line would otherwise end up glued here.
               body.sub!(/^  version .*\n/, "")
               m = body.match(/^  sha256 .*\n/)
               abort "sha256 line not found" unless m
-              body.insert(m.end(0), prefix)
+              body.insert(m.end(0), prefix + "\n")
             end
             File.write(path, body)
           ' Formula/omlx.rb "$url" "$sha" "$(printf "$version_prefix")"
