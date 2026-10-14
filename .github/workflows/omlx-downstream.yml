@@ -23,7 +23,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
   group: omlx-downstream
@@ -129,7 +128,7 @@ jobs:
       - name: Check the formula parses
         run: ruby -c Formula/omlx.rb
 
-      - name: Open a pull request when something moved
+      - name: Publish the built tree
         env:
           TAG: ${{ steps.upstream.outputs.tag }}
         run: |
@@ -138,21 +137,25 @@ jobs:
           git add -A
           if git diff --cached --quiet; then
             echo "already at $TAG with patches applied"
-            exit 0
+          else
+            version=${TAG#v}
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "omlx $version"
+            git push --force-with-lease -u origin "$branch"
           fi
-          version=${TAG#v}
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "omlx $version"
-          git push --force-with-lease -u origin "$branch"
-          if gh pr view "$branch" >/dev/null 2>&1; then
-            echo "PR for $branch already open"
-            exit 0
-          fi
-          gh pr create --base "$GITHUB_REF_NAME" --head "$branch" \
-            --title "omlx $version" \
-            --body "Tracks upstream [$TAG](https://github.com/$UPSTREAM/releases/tag/$TAG): full tagged tree with \`patches/*.patch\` applied, formula url/sha256/version repointed.
-
-          Patch set: \`patches/omlx-formula-downstream.patch\` (extras options, Metal probe) and \`patches/battery-pause.patch\` (pause models on battery power).
-
-          Build with \`brew upgrade dbydd/omlx/omlx --with-custom-kernel --with-mcp --with-cluster --with-modelscope\`."
+          # The branch is a verification artifact, not a merge target: it is
+          # rooted at the tag, so merging it into main would revert every
+          # commit main gained after that tag. main carries the same state as
+          # patches/*.patch plus the pinned formula, which is what brew builds.
+          {
+            echo "### omlx $TAG"
+            echo
+            echo '```ruby'
+            sed -n '1,16p' Formula/omlx.rb
+            echo '```'
+            echo
+            echo "Patch set applied: \`patches/*.patch\` ($(ls patches/*.patch | wc -l | tr -d ' ') files)."
+            echo
+            echo "Build with \`brew upgrade dbydd/omlx/omlx --with-custom-kernel --with-mcp --with-cluster --with-modelscope\`."
+          } >> "$GITHUB_STEP_SUMMARY"
