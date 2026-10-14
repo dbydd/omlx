@@ -1,5 +1,5 @@
 diff --git a/Formula/omlx.rb b/Formula/omlx.rb
-index fb4e8d9d..593ad8a5 100644
+index fb4e8d9d..57a0c08f 100644
 --- a/Formula/omlx.rb
 +++ b/Formula/omlx.rb
 @@ -3,15 +3,23 @@ class Omlx < Formula
@@ -12,8 +12,8 @@ index fb4e8d9d..593ad8a5 100644
 +  sha256 "cd83e8ecfaecb95407c3e48c793f639454b9bcddf002235fa0b1a2e4c05528a6"
    license "Apache-2.0"
 +  patch do
-+    url "https://raw.githubusercontent.com/dbydd/omlx/main/patches/battery-pause.patch"
-+    sha256 "077f795e0331b6f709381db6d8ddef9e2b3245248aef1bd00497546e67dc97c0"
++    url "https://raw.githubusercontent.com/dbydd/omlx/main/patches/power-states.patch"
++    sha256 "709da76ac55ce96e7c626558272a3dfcd0d7a104348a5f6d8ad1a3f55bb77837"
 +  end
  
    head "https://github.com/jundot/omlx.git", branch: "main"

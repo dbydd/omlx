@@ -1,0 +1,542 @@
+diff --git a/omlx/admin/routes.py b/omlx/admin/routes.py
+index 83641af3..0c5ed833 100644
+--- a/omlx/admin/routes.py
++++ b/omlx/admin/routes.py
+@@ -653,6 +653,8 @@ class GlobalSettingsRequest(BaseModel):
+     burst_decode_mode: str | None = None  # "off" / "light" / "balanced" / "aggressive"
+     preserve_mid_system_cache: bool | None = None
+     gpu_keep_warm_interval: float | None = None
++    battery_poll_interval: float | None = None
++    battery_idle_seconds: float | None = None
+     qwen4_gdn_decode_wide_proj: bool | None = None
+     distributed_inference_enabled: bool | None = None
+     max_audio_upload_size: str | None = None
+@@ -4537,6 +4539,16 @@ def _global_settings_response(global_settings):
+                 "gpu_keep_warm_interval",
+                 0.5,
+             ),
++            "battery_poll_interval": getattr(
++                global_settings.server,
++                "battery_poll_interval",
++                0.0,
++            ),
++            "battery_idle_seconds": getattr(
++                global_settings.server,
++                "battery_idle_seconds",
++                120.0,
++            ),
+             "distributed_inference_enabled": getattr(
+                 global_settings.server,
+                 "distributed_inference_enabled",
+@@ -4860,6 +4872,16 @@ async def update_global_settings(
+             keep_warm_pool.configure_gpu_keep_warm(interval)
+             keep_warm_pool._ensure_gpu_keep_warm_task()
+         runtime_applied.append("gpu_keep_warm_interval")
++    if request.battery_poll_interval is not None:
++        global_settings.server.battery_poll_interval = max(
++            0.0, float(request.battery_poll_interval)
++        )
++        runtime_applied.append("battery_poll_interval")
++    if request.battery_idle_seconds is not None:
++        global_settings.server.battery_idle_seconds = max(
++            0.0, float(request.battery_idle_seconds)
++        )
++        runtime_applied.append("battery_idle_seconds")
+     if request.distributed_inference_enabled is not None:
+         # Route exposure and Bonjour publication are fixed at process startup,
+         # so this intentionally takes effect after the normal settings restart.
+diff --git a/omlx/engine_pool.py b/omlx/engine_pool.py
+index 266150a2..0e465fc9 100644
+--- a/omlx/engine_pool.py
++++ b/omlx/engine_pool.py
+@@ -391,6 +391,9 @@ class EnginePool:
+         self._unloading_models: set[str] = set()
+         self._failed_load_reclaim_tasks: set[asyncio.Task[None]] = set()
+         self._failed_load_reclaim_task: asyncio.Task[None] | None = None
++        # Set by the power-state loop away from AC: new loads are refused
++        # while it stands, already-loaded models keep serving.
++        self._paused = False
+         self._shutting_down = False
+         # Last logged forced-offload state per (model_id, kind).
+         self._offload_warn_state: dict[tuple[str, str], bool] = {}
+@@ -2155,6 +2158,11 @@ class EnginePool:
+         )
+         if ready is not None:
+             return ready
++        if self._paused:
++            # Away from AC: nothing new starts. The caller sees the same
++            # ModelBusyError a pending unload raises, which routes map to
++            # a busy response rather than a load attempt.
++            raise ModelBusyError(model_id, "load while paused on battery")
+         async with self._lock:
+             entry = self._entries.get(model_id)
+             if not entry:
+@@ -2531,6 +2539,57 @@ class EnginePool:
+             await self._unload_engine(model_id)
+             return True
+ 
++    def set_paused(self, paused: bool) -> None:
++        """Refuse new model loads while paused (a request returns 503).
++
++        Models already loaded keep serving: the pause stops the next one
++        from starting, which is what away-from-AC power wants. Clearing it
++        needs nothing else, the next request loads on demand.
++        """
++        if paused != self._paused:
++            self._paused = paused
++            logger.info("Engine pool %s", "paused" if paused else "resumed")
++
++    @property
++    def paused(self) -> bool:
++        """Whether new model loads are refused right now."""
++        return self._paused
++
++    async def unload_for_battery(
++        self,
++        idle_seconds: float,
++        include_pinned: bool = False,
++    ) -> list[str]:
++        """Unload loaded models idle for ``idle_seconds`` away from AC power.
++
++        Entries loading or serving a request are left alone, and the next
++        request reloads a model on demand. ``include_pinned`` also drops
++        pinned models, which the sealed state wants: a machine in a bag
++        keeps nothing resident. Returns the ids that unloaded.
++        """
++        cutoff = time.time() - max(0.0, idle_seconds)
++        unloaded = []
++        for model_id, entry in list(self._entries.items()):
++            if (
++                entry.engine is None
++                or (entry.is_pinned and not include_pinned)
++                or entry.is_loading
++                or entry.in_use > 0
++                or entry.last_access > cutoff
++            ):
++                continue
++            if include_pinned and entry.is_pinned:
++                if self._entry_has_active_requests(entry):
++                    entry.last_access = time.time()
++                    continue
++                # _unload_engine takes no lock itself; unload_if_idle_unpinned
++                # is the only caller that holds one, and this path does not.
++                await self._unload_engine(model_id)
++                unloaded.append(model_id)
++            elif await self.unload_if_idle_unpinned(model_id):
++                unloaded.append(model_id)
++        return unloaded
++
+     @asynccontextmanager
+     async def acquire(self, model_id: str, force_lm: bool = False):
+         """Acquire an engine with an atomic in-use lease.
+diff --git a/omlx/server.py b/omlx/server.py
+index 78903704..72dbc0cc 100644
+--- a/omlx/server.py
++++ b/omlx/server.py
+@@ -46,6 +46,9 @@ import inspect
+ import json
+ import logging
+ import os
++import re
++import subprocess
++import sys
+ import time
+ import uuid
+ from collections.abc import AsyncIterator, Awaitable, Callable
+@@ -446,6 +449,67 @@ def _reset_boundary_snapshots_for_server() -> None:
+         logger.warning("Failed to reset boundary snapshot directory: %s", exc)
+ 
+ 
++def _on_battery_power() -> bool | None:
++    """True on battery, False on AC, None when the power state cannot be read."""
++    if sys.platform != "darwin":
++        return None
++    try:
++        head = subprocess.run(
++            ["pmset", "-g", "ps"],
++            capture_output=True,
++            text=True,
++            timeout=5,
++            check=False,
++        ).stdout.splitlines()[0]
++    except Exception:  # pragma: no cover - pmset hiccups must not stop the loop
++        return None
++    return "AC Power" not in head
++
++
++def _lid_is_closed() -> bool | None:
++    """True when the lid is closed, False when open, None when unknown."""
++    if sys.platform != "darwin":
++        return None
++    try:
++        out = subprocess.run(
++            ["ioreg", "-r", "-d", "1", "-k", "AppleClamshellState"],
++            capture_output=True,
++            text=True,
++            timeout=5,
++            check=False,
++        ).stdout
++    except Exception:  # pragma: no cover - best-effort, like the power probe
++        return None
++    match = re.search(r'"AppleClamshellState" = (Yes|No)', out)
++    if match is None:
++        return None
++    return match.group(1) == "Yes"
++
++
++# Serving is decided by power and lid together:
++#   POWER_SERVING - on AC. The lid does not matter: a closed lid on AC is a
++#                   desk with a monitor, and models load on demand.
++#   POWER_BATTERY - on battery with the lid open: no new loads, and a model
++#                   that has been idle for battery_idle_seconds unloads. A
++#                   request that is already running still finishes.
++#   POWER_SEALED  - on battery with the lid closed, a machine in a bag:
++#                   nothing serves, and every model unloads now regardless
++#                   of the idle clock.
++POWER_SERVING = "serving"
++POWER_BATTERY = "battery"
++POWER_SEALED = "sealed"
++
++
++def _power_state() -> str | None:
++    """The current serving state, or None when it cannot be read."""
++    battery = _on_battery_power()
++    if battery is None:
++        return None
++    if not battery:
++        return POWER_SERVING
++    return POWER_SEALED if _lid_is_closed() is True else POWER_BATTERY
++
++
+ @asynccontextmanager
+ async def lifespan(app: FastAPI):
+     """FastAPI lifespan for startup/shutdown events."""
+@@ -665,6 +729,83 @@ async def lifespan(app: FastAPI):
+ 
+         ttl_task = asyncio.create_task(_ttl_check_loop())
+ 
++    # Power states: on AC a request loads its model on demand. On battery the
++    # server stops taking new work (see EnginePool.set_paused), and models
++    # unload: after battery_idle_seconds without a request with the lid open,
++    # at once with the lid closed. Plugging back in clears the pause and the
++    # next request loads again, so nothing has to be restarted. The loop
++    # reads its settings every tick, so an admin change applies live.
++    power_task = None
++    if sys.platform == "darwin":
++
++        async def _power_state_loop() -> None:
++            seen: str | None = None
++            while True:
++                try:
++                    gs = _server_state.global_settings
++                    poll = (
++                        float(getattr(gs.server, "battery_poll_interval", 0.0))
++                        if gs
++                        else 0.0
++                    )
++                    if poll <= 0:
++                        seen = None
++                        if _server_state.engine_pool is not None:
++                            _server_state.engine_pool.set_paused(False)
++                        await asyncio.sleep(30.0)
++                        continue
++                    idle = (
++                        float(getattr(gs.server, "battery_idle_seconds", 120.0))
++                        if gs
++                        else 120.0
++                    )
++                    state = _power_state()
++                    if state is not None and state != seen:
++                        logger.info(
++                            "Power state %s: %s (checked every %ss)",
++                            state,
++                            "models load on demand"
++                            if state == POWER_SERVING
++                            else f"paused, unload after {int(idle)}s idle"
++                            if state == POWER_BATTERY
++                            else "paused, unloading every model now",
++                            int(poll),
++                        )
++                        seen = state
++                    pool = _server_state.engine_pool
++                    if state is None or pool is None:
++                        await asyncio.sleep(max(1.0, poll))
++                        continue
++                    pool.set_paused(state != POWER_SERVING)
++                    if state == POWER_SEALED:
++                        # In the bag: drop pinned models too, nothing stays
++                        # resident to be kept warm.
++                        unloaded = await pool.unload_for_battery(
++                            0.0, include_pinned=True
++                        )
++                    elif state == POWER_BATTERY:
++                        # Away from AC the point is to keep nothing warm, so
++                        # a pinned model goes too, after the idle window.
++                        unloaded = await pool.unload_for_battery(
++                            idle, include_pinned=True
++                        )
++                    else:
++                        unloaded = []
++                    if unloaded:
++                        logger.info(
++                            "Power state %s: unloaded %s",
++                            state,
++                            ", ".join(unloaded),
++                        )
++                    await asyncio.sleep(max(1.0, poll))
++                except asyncio.CancelledError:
++                    break
++                except Exception as e:
++                    logger.error(f"Power state error: {e}")
++                    await asyncio.sleep(30.0)
++
++        power_task = asyncio.create_task(_power_state_loop())
++
+     # Initialize MCP if config provided
+     # Priority: env var > settings.json
+     mcp_config = os.environ.get("OMLX_MCP_CONFIG")
+@@ -715,6 +856,12 @@ async def lifespan(app: FastAPI):
+             await ttl_task
+         except asyncio.CancelledError:
+             pass
++    if power_task is not None:
++        power_task.cancel()
++        try:
++            await power_task
++        except asyncio.CancelledError:
++            pass
+     if _server_state.process_memory_enforcer is not None:
+         await _server_state.process_memory_enforcer.stop()
+         if _server_state.engine_pool is not None:
+diff --git a/omlx/settings.py b/omlx/settings.py
+index 23369a73..fc152e34 100644
+--- a/omlx/settings.py
++++ b/omlx/settings.py
+@@ -215,6 +215,13 @@ class ServerSettings:
+     # large resident models). Ticks stop after 5 minutes without requests.
+     # 0 disables.
+     gpu_keep_warm_interval: float = 0.5
++    # Battery pause (macOS): while running on battery, unload unpinned models
++    # once they have been idle for battery_idle_seconds, so the machine keeps
++    # only the server resident away from AC power. A request reloads a model
++    # on demand and plugging back in needs no action. battery_poll_interval
++    # is the seconds between power checks; 0 disables the feature.
++    battery_poll_interval: float = 0.0
++    battery_idle_seconds: float = 120.0
+ 
+     def max_audio_upload_bytes(self) -> int:
+         """Configured audio upload limit in bytes. Non-positive sizes raise ValueError."""
+@@ -265,6 +272,8 @@ class ServerSettings:
+             max_request_body_size=data.get("max_request_body_size", "512MB"),
+             max_image_side_length=data.get("max_image_side_length", 2048),
+             gpu_keep_warm_interval=float(data.get("gpu_keep_warm_interval", 0.5)),
++            battery_poll_interval=float(data.get("battery_poll_interval", 0.0)),
++            battery_idle_seconds=float(data.get("battery_idle_seconds", 120.0)),
+         )
+ 
+ 
+diff --git a/tests/test_power_states.py b/tests/test_power_states.py
+new file mode 100644
+index 00000000..cf778227
+--- /dev/null
++++ b/tests/test_power_states.py
+@@ -0,0 +1,165 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Tests for the power-aware serving states (battery and lid)."""
++
++import asyncio
++import time
++from unittest.mock import patch
++
++import pytest
++
++from omlx import server
++from omlx.engine_pool import EnginePool
++
++
++class TestPowerState:
++    """_power_state combines the power source with the lid."""
++
++    def test_ac_serves_whatever_the_lid_does(self):
++        for lid in (True, False, None):
++            with (
++                patch.object(server, "_on_battery_power", return_value=False),
++                patch.object(server, "_lid_is_closed", return_value=lid),
++            ):
++                assert server._power_state() == server.POWER_SERVING
++
++    def test_battery_open_lid_stops_after_idle(self):
++        with (
++            patch.object(server, "_on_battery_power", return_value=True),
++            patch.object(server, "_lid_is_closed", return_value=False),
++        ):
++            assert server._power_state() == server.POWER_BATTERY
++
++    def test_battery_closed_lid_seals(self):
++        with (
++            patch.object(server, "_on_battery_power", return_value=True),
++            patch.object(server, "_lid_is_closed", return_value=True),
++        ):
++            assert server._power_state() == server.POWER_SEALED
++
++    def test_unknown_power_reads_as_unknown(self):
++        with patch.object(server, "_on_battery_power", return_value=None):
++            assert server._power_state() is None
++
++    def test_unknown_lid_on_battery_is_not_sealed(self):
++        """A lid that cannot be read must not be taken for a closed one."""
++        with (
++            patch.object(server, "_on_battery_power", return_value=True),
++            patch.object(server, "_lid_is_closed", return_value=None),
++        ):
++            assert server._power_state() == server.POWER_BATTERY
++
++
++class _Entry:
++    def __init__(
++        self,
++        engine="engine",
++        is_pinned=False,
++        is_loading=False,
++        in_use=0,
++        last_access=None,
++        active=False,
++    ):
++        self.engine = engine
++        self.is_pinned = is_pinned
++        self.is_loading = is_loading
++        self.in_use = in_use
++        self.last_access = time.time() if last_access is None else last_access
++        self._active = active
++        self.model_id = "m"
++
++
++class _Pool:
++    """Enough of EnginePool to drive unload_for_battery and the pause gate."""
++
++    def __init__(self, entries):
++        self._entries = entries
++        self._paused = False
++        self.unloaded = []
++
++    async def unload_if_idle_unpinned(self, model_id):
++        self.unloaded.append(model_id)
++        return True
++
++    async def _unload_engine(self, model_id):
++        self.unloaded.append(model_id)
++
++    def _entry_has_active_requests(self, entry):
++        return entry._active
++
++
++def _run(pool, idle, include_pinned=False):
++    return asyncio.run(
++        EnginePool.unload_for_battery(pool, idle, include_pinned=include_pinned)
++    )
++
++
++class TestUnloadForBattery:
++    def test_unpinned_idle_unloads_only_past_the_window(self):
++        now = time.time()
++        pool = _Pool(
++            {
++                "idle": _Entry(last_access=now - 121),
++                "recent": _Entry(last_access=now - 119),
++            }
++        )
++        assert _run(pool, 120) == ["idle"]
++
++    def test_busy_and_loading_entries_stay(self):
++        now = time.time()
++        pool = _Pool(
++            {
++                "busy": _Entry(last_access=now - 600, in_use=1),
++                "loading": _Entry(last_access=now - 600, is_loading=True),
++                "gone": _Entry(engine=None, last_access=now - 600),
++            }
++        )
++        assert _run(pool, 120) == []
++
++    def test_pinned_stays_unless_asked_for(self):
++        now = time.time()
++        pool = _Pool({"pinned": _Entry(last_access=now - 600, is_pinned=True)})
++        assert _run(pool, 120) == []
++        assert _run(pool, 120, include_pinned=True) == ["pinned"]
++
++    def test_pinned_in_use_still_stays(self):
++        """Even sealed, a pinned model mid-request finishes first."""
++        now = time.time()
++        pool = _Pool(
++            {
++                "pinned-busy": _Entry(
++                    last_access=now - 600, is_pinned=True, active=True
++                )
++            }
++        )
++        assert _run(pool, 0.0, include_pinned=True) == []
++
++
++class _Gate(EnginePool):
++    """EnginePool with only what get_engine needs for the pause gate."""
++
++    def __init__(self):
++        self._paused = False
++        self._entries = {"m": _Entry()}
++        self._lock = asyncio.Lock()
++
++    async def _reloadable_failed_engine(self, model_id):
++        return None
++
++    def _acquire_loaded_engine(self, *args, **kwargs):
++        return None
++
++
++class TestPauseGate:
++    def test_paused_refuses_a_new_load(self):
++        from omlx.exceptions import ModelBusyError
++
++        pool = _Gate()
++        pool.set_paused(True)
++        assert pool.paused is True
++        with pytest.raises(ModelBusyError):
++            asyncio.run(pool.get_engine("m"))
++
++    def test_unpaused_is_ready_to_load(self):
++        pool = _Gate()
++        pool.set_paused(False)
++        assert pool.paused is False
+diff --git a/tests/test_settings.py b/tests/test_settings.py
+index 416b71e9..d311387b 100644
+--- a/tests/test_settings.py
++++ b/tests/test_settings.py
+@@ -59,6 +59,20 @@ class TestServerSettings:
+         assert settings.max_image_upload_size == "50MB"
+         assert settings.max_image_upload_bytes() == 50 * 1024 * 1024
+         assert settings.max_image_side_length == 2048
++        # battery pause is off until battery_poll_interval is set
++        assert settings.battery_poll_interval == 0.0
++        assert settings.battery_idle_seconds == 120.0
++
++    def test_battery_pause_from_dict(self):
++        """Battery pause settings round-trip through from_dict."""
++        settings = ServerSettings.from_dict(
++            {"battery_poll_interval": 15, "battery_idle_seconds": 60}
++        )
++        assert settings.battery_poll_interval == 15.0
++        assert settings.battery_idle_seconds == 60.0
++        defaults = ServerSettings.from_dict({})
++        assert defaults.battery_poll_interval == 0.0
++        assert defaults.battery_idle_seconds == 120.0
+ 
+     def test_custom_values(self):
+         """Test custom values."""
+@@ -94,6 +108,8 @@ class TestServerSettings:
+             "max_request_body_size": "512MB",
+             "max_image_side_length": 2048,
+             "gpu_keep_warm_interval": 0.5,
++            "battery_poll_interval": 0.0,
++            "battery_idle_seconds": 120.0,
+         }
+ 
+     def test_qwen4_decode_setting_round_trip(self):
