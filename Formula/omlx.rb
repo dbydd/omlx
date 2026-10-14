@@ -6,11 +6,11 @@ class Omlx < Formula
   url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.1.dev1.tar.gz"
   sha256 "cd83e8ecfaecb95407c3e48c793f639454b9bcddf002235fa0b1a2e4c05528a6"
   version "0.7.1.dev1"
-  revision 2
+  revision 3
   license "Apache-2.0"
   patch do
     url "https://raw.githubusercontent.com/dbydd/omlx/main/patches/power-states.patch"
-    sha256 "709da76ac55ce96e7c626558272a3dfcd0d7a104348a5f6d8ad1a3f55bb77837"
+    sha256 "00cb473acb1e41eae0a72d3e384137fb3a0ebc4bdf1f2ca5b8265a9cbfbab71f"
   end
 
   head "https://github.com/jundot/omlx.git", branch: "main"
