@@ -105,6 +105,9 @@ jobs:
               .to_h { |pass| [File.basename(pass), Digest::SHA256.file(pass).hexdigest] }
             puts "patch_shas_changed=#{actual != declared}"
           ' >> "$GITHUB_OUTPUT"
+          # Leave the tree on main for the pin step below; the patched tree
+          # only existed to prove the patch set applies.
+          git checkout -qf main
 
       - name: Pin main to ${{ steps.upstream.outputs.tag }}
         env:
