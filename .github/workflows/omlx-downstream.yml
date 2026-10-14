@@ -2,14 +2,22 @@ name: omlx downstream
 
 # Keeps this tap on the newest jundot/omlx release with our patches applied.
 #
-# The job resolves the newest upstream release, checks out that tag, applies
-# patches/*.patch (formula extras + Metal probe, battery pause), points the
-# formula url/sha256 at the tag — adding an explicit version when Homebrew
-# would mis-parse the tag, as it reads v0.7.1.dev1 as "1" — and opens a PR
-# from the tagged tree. The PR's merge-base is the tag, so its diff is just
-# our patches; the merge into main is where upstream drift shows up. A patch
-# that no longer applies fails the run with the conflicting hunk, which is
-# the signal to rebase the patch by hand.
+# Two things must hold for a release:
+#   1. patches/*.patch still apply to that tag's tree, and the recipe's
+#      `patch do` sha256s still name those files — the pip build gets the
+#      source patches through those blocks (the formula installs the upstream
+#      tarball, not this tree).
+#   2. Formula/omlx.rb on main points at the tag, states the version when
+#      Homebrew's URL parser would mis-read it (it reads v0.7.1.dev1 as "1"),
+#      and carries a revision only when a rebuild of the same version is
+#      actually needed.
+#
+# The job verifies (1) against the tagged tree, then commits (2) to main.
+# A patch that no longer applies fails the run with the conflicting hunk,
+# which is the signal to rebase the patch by hand.
+#
+# When our formula modifications change, update both Formula/omlx.rb and
+# patches/omlx-formula-downstream.patch so they stay the same edit.
 
 on:
   schedule:
@@ -17,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Upstream tag to build from (default: newest release)'
+        description: 'Upstream tag to verify and pin (default: newest release)'
         required: false
         type: string
 
@@ -51,111 +59,112 @@ jobs:
           git fetch --no-tags "https://github.com/$UPSTREAM" "+refs/tags/$tag:refs/tags/$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Build the patched tree (upstream ${{ steps.upstream.outputs.tag }})
-        id: build
+      - name: Verify the patch set against ${{ steps.upstream.outputs.tag }}
+        id: verify
         env:
           TAG: ${{ steps.upstream.outputs.tag }}
         run: |
           set -euo pipefail
-          branch="omlx-downstream/$TAG"
-          # patches/ and workflow tooling live on our branches, not upstream's
-          # tag: carry them across the checkout.
+          # patches/ lives on main, not on the upstream tag: carry it across.
           mkdir -p /tmp/downstream
           cp -R patches /tmp/downstream/patches
-          git checkout -q -B "$branch" "refs/tags/$TAG"
-          mkdir -p patches
+          git checkout -q -B "verify/$TAG" "refs/tags/$TAG"
           cp -R /tmp/downstream/patches/. patches/
           for patch in patches/*.patch; do
             echo "applying $patch"
             git apply --3way --whitespace=nowarn "$patch"
           done
-          # Source patches reach the pip build through recipe `patch do`
-          # blocks (the formula builds the upstream tarball, not this tree).
-          # Fresh blocks each run: sha from the copy in this checkout, URL
-          # from main where the PR merges. The recipe-modding patch is
-          # excluded: it edits the recipe, not the buildpath.
-          inject=""
-          for patch in patches/*.patch; do
-            case "$patch" in
-              patches/omlx-formula-downstream.patch) continue ;;
-            esac
-            psha=$(shasum -a 256 "$patch" | cut -d' ' -f1)
-            praw="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_REF_NAME/$patch"
-            inject="${inject}  patch do\n    url \"$praw\"\n    sha256 \"$psha\"\n  end\n"
-          done
-          if [ -n "$inject" ]; then
-            ruby -e '
-              body = File.read("Formula/omlx.rb")
-              # printf already turned the \n escapes into real newlines.
-              block = ARGV[0]
-              # Insert after the license line. A block beats a "\\1" backreference,
-              # which a shell-quoted script turns into an octal escape.
-              m = body.match(/^  license .*\n/)
-              abort "license line not found" unless m
-              # $(...) strips the trailing newline printf produced.
-              body.insert(m.end(0), block.end_with?("\n") ? block : block + "\n")
-              File.write("Formula/omlx.rb", body)
-            ' "$(printf "$inject")"
-          fi
+          ruby -c Formula/omlx.rb
+          # The recipe's declared sha256s must name the files in this checkout;
+          # this catches a source patch edited without its `patch do` sha.
+          ruby -rdigest -e '
+            body = File.read("Formula/omlx.rb")
+            declared = body.scan(
+              /patch do\s*\n\s*url "([^"]+)"\s*\n\s*sha256 "([^"]+)"/
+            ).to_h { |url, sha| [File.basename(url), sha] }
+            abort "recipe declares no patch do block" if declared.empty?
+            actual = Dir["patches/*.patch"]
+              .reject { |pass| pass.end_with?("omlx-formula-downstream.patch") }
+              .to_h { |pass| [File.basename(pass), Digest::SHA256.file(pass).hexdigest] }
+            if actual != declared
+              abort "patch do sha256 out of date:\n" \
+                    "  declared: #{declared.inspect}\n" \
+                    "  files:    #{actual.inspect}"
+            end
+            puts "patch do shas verified (#{declared.length})"
+          '
+          # Does main's recipe already name these patches? If not, the same
+          # version needs a new revision to make Homebrew rebuild it.
+          ruby -rdigest -e '
+            main_formula = `git show origin/main:Formula/omlx.rb`
+            declared = main_formula.scan(
+              /patch do\s*\n\s*url "([^"]+)"\s*\n\s*sha256 "([^"]+)"/
+            ).to_h { |url, sha| [File.basename(url), sha] }
+            actual = Dir["patches/*.patch"]
+              .reject { |pass| pass.end_with?("omlx-formula-downstream.patch") }
+              .to_h { |pass| [File.basename(pass), Digest::SHA256.file(pass).hexdigest] }
+            puts "patch_shas_changed=#{actual != declared}"
+          ' >> "$GITHUB_OUTPUT"
+
+      - name: Pin main to ${{ steps.upstream.outputs.tag }}
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+          SHAS_CHANGED: ${{ steps.verify.outputs.patch_shas_changed }}
+        run: |
+          set -euo pipefail
+          git checkout -q main
           url="https://github.com/$UPSTREAM/archive/refs/tags/$TAG.tar.gz"
           sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
-          # Homebrew's URL version parser reads tags such as v0.7.1.dev1 as
-          # "1", which sorts above every real release. State the version when
-          # the tag has a prerelease suffix.
           version=${TAG#v}
-          if printf '%s' "$version" | grep -Evq '^[0-9]+(\.[0-9]+)*$'; then
-            version_prefix="  version \"$version\""
-          else
-            version_prefix=""
-          fi
-          ruby -e '
-            path, url, sha, prefix = ARGV
+          ruby -rdigest -e '
+            path, url, sha, version, shas_changed = ARGV
             body = File.read(path)
+            before = body.dup
             abort "url line not found" unless body.sub!(/^  url .*$/, %Q{  url "#{url}"})
             abort "sha256 line not found" unless body.sub!(/^  sha256 .*$/, %Q{  sha256 "#{sha}"})
-            unless prefix.empty?
-              # Drop any version line the tag already carries, then insert
-              # after sha256, with its own newline: $(...) strips a trailing
-              # one, so the license line would otherwise end up glued here.
-              body.sub!(/^  version .*\n/, "")
+            # Homebrew reads a dev tag such as v0.7.1.dev1 as "1", which sorts
+            # above every real release, so state the version for those.
+            stable_tag = version.match?(/\A\d+(\.\d+)*\z/)
+            current = body[/^  version "(.*)"/, 1]
+            revision = body[/^  revision (\d+)/, 1].to_i
+            body.sub!(/^  version .*\n/, "")
+            body.sub!(/^  revision \d+\n/, "")
+            if !stable_tag
+              if current != version
+                revision = 1            # first build of a new release
+              elsif shas_changed == "true"
+                revision += 1           # same release, different patch set
+              end
+              insert = "  version \"#{version}\"\n"
+              insert += "  revision #{revision}\n" if revision.positive?
               m = body.match(/^  sha256 .*\n/)
               abort "sha256 line not found" unless m
-              body.insert(m.end(0), prefix + "\n")
+              body.insert(m.end(0), insert)
             end
             File.write(path, body)
-          ' Formula/omlx.rb "$url" "$sha" "$(printf "$version_prefix")"
+            puts body == before ? "unchanged" : "updated"
+          ' Formula/omlx.rb "$url" "$sha" "$version" "$SHAS_CHANGED"
 
-      - name: Check the formula parses
-        run: ruby -c Formula/omlx.rb
-
-      - name: Publish the built tree
+      - name: Commit the pin to main
         env:
           TAG: ${{ steps.upstream.outputs.tag }}
         run: |
           set -euo pipefail
-          branch="omlx-downstream/$TAG"
-          git add -A
+          git add Formula/omlx.rb
           if git diff --cached --quiet; then
-            echo "already at $TAG with patches applied"
-          else
-            version=${TAG#v}
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "omlx $version"
-            git push --force-with-lease -u origin "$branch"
+            echo "main already points at $TAG"
+            exit 0
           fi
-          # The branch is a verification artifact, not a merge target: it is
-          # rooted at the tag, so merging it into main would revert every
-          # commit main gained after that tag. main carries the same state as
-          # patches/*.patch plus the pinned formula, which is what brew builds.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "omlx ${TAG#v}"
+          git push origin HEAD:main
           {
             echo "### omlx $TAG"
             echo
             echo '```ruby'
             sed -n '1,16p' Formula/omlx.rb
             echo '```'
-            echo
-            echo "Patch set applied: \`patches/*.patch\` ($(ls patches/*.patch | wc -l | tr -d ' ') files)."
             echo
             echo "Build with \`brew upgrade dbydd/omlx/omlx --with-custom-kernel --with-mcp --with-cluster --with-modelscope\`."
           } >> "$GITHUB_STEP_SUMMARY"
