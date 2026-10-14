@@ -59,6 +59,20 @@ class TestServerSettings:
         assert settings.max_image_upload_size == "50MB"
         assert settings.max_image_upload_bytes() == 50 * 1024 * 1024
         assert settings.max_image_side_length == 2048
+        # battery pause is off until battery_poll_interval is set
+        assert settings.battery_poll_interval == 0.0
+        assert settings.battery_idle_seconds == 120.0
+
+    def test_battery_pause_from_dict(self):
+        """Battery pause settings round-trip through from_dict."""
+        settings = ServerSettings.from_dict(
+            {"battery_poll_interval": 15, "battery_idle_seconds": 60}
+        )
+        assert settings.battery_poll_interval == 15.0
+        assert settings.battery_idle_seconds == 60.0
+        defaults = ServerSettings.from_dict({})
+        assert defaults.battery_poll_interval == 0.0
+        assert defaults.battery_idle_seconds == 120.0
 
     def test_custom_values(self):
         """Test custom values."""

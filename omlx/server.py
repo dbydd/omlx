@@ -46,6 +46,8 @@ import inspect
 import json
 import logging
 import os
+import subprocess
+import sys
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -446,6 +448,23 @@ def _reset_boundary_snapshots_for_server() -> None:
         logger.warning("Failed to reset boundary snapshot directory: %s", exc)
 
 
+def _on_battery_power() -> bool | None:
+    """True on battery, False on AC, None when the power state cannot be read."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        head = subprocess.run(
+            ["pmset", "-g", "ps"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout.splitlines()[0]
+    except Exception:  # pragma: no cover - pmset hiccups must not stop the loop
+        return None
+    return "AC Power" not in head
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
@@ -665,6 +684,60 @@ async def lifespan(app: FastAPI):
 
         ttl_task = asyncio.create_task(_ttl_check_loop())
 
+    # Battery pause: while on battery, unload unpinned models once they have
+    # been idle for server.battery_idle_seconds, so away from AC power only
+    # the server stays resident. A request reloads on demand and plugging in
+    # needs no action. The loop reads its settings every tick, so enabling
+    # the feature in the admin settings applies without a restart.
+    battery_task = None
+    if sys.platform == "darwin":
+
+        async def _battery_pause_loop() -> None:
+            seen: bool | None = None
+            while True:
+                try:
+                    gs = _server_state.global_settings
+                    poll = (
+                        float(getattr(gs.server, "battery_poll_interval", 0.0))
+                        if gs
+                        else 0.0
+                    )
+                    if poll <= 0:
+                        seen = None
+                        await asyncio.sleep(30.0)
+                        continue
+                    idle = (
+                        float(getattr(gs.server, "battery_idle_seconds", 120.0))
+                        if gs
+                        else 120.0
+                    )
+                    battery = _on_battery_power()
+                    if battery is not None and battery != seen:
+                        logger.info(
+                            "Battery pause enabled: %s, unload after %ss"
+                            " idle (checked every %ss)",
+                            "on battery" if battery else "on AC",
+                            int(idle),
+                            int(poll),
+                        )
+                        seen = battery
+                    if battery and _server_state.engine_pool is not None:
+                        unloaded = await _server_state.engine_pool.unload_for_battery(
+                            idle
+                        )
+                        if unloaded:
+                            logger.info(
+                                "Battery pause: unloaded %s", ", ".join(unloaded)
+                            )
+                    await asyncio.sleep(max(1.0, poll))
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Battery pause error: {e}")
+                    await asyncio.sleep(30.0)
+
+        battery_task = asyncio.create_task(_battery_pause_loop())
+
     # Initialize MCP if config provided
     # Priority: env var > settings.json
     mcp_config = os.environ.get("OMLX_MCP_CONFIG")
@@ -713,6 +786,12 @@ async def lifespan(app: FastAPI):
         ttl_task.cancel()
         try:
             await ttl_task
+        except asyncio.CancelledError:
+            pass
+    if battery_task is not None:
+        battery_task.cancel()
+        try:
+            await battery_task
         except asyncio.CancelledError:
             pass
     if _server_state.process_memory_enforcer is not None:

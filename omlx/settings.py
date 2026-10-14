@@ -215,6 +215,13 @@ class ServerSettings:
     # large resident models). Ticks stop after 5 minutes without requests.
     # 0 disables.
     gpu_keep_warm_interval: float = 0.5
+    # Battery pause (macOS): while running on battery, unload unpinned models
+    # once they have been idle for battery_idle_seconds, so the machine keeps
+    # only the server resident away from AC power. A request reloads a model
+    # on demand and plugging back in needs no action. battery_poll_interval
+    # is the seconds between power checks; 0 disables the feature.
+    battery_poll_interval: float = 0.0
+    battery_idle_seconds: float = 120.0
 
     def max_audio_upload_bytes(self) -> int:
         """Configured audio upload limit in bytes. Non-positive sizes raise ValueError."""
@@ -265,6 +272,8 @@ class ServerSettings:
             max_request_body_size=data.get("max_request_body_size", "512MB"),
             max_image_side_length=data.get("max_image_side_length", 2048),
             gpu_keep_warm_interval=float(data.get("gpu_keep_warm_interval", 0.5)),
+            battery_poll_interval=float(data.get("battery_poll_interval", 0.0)),
+            battery_idle_seconds=float(data.get("battery_idle_seconds", 120.0)),
         )
 
 

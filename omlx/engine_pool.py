@@ -2531,6 +2531,28 @@ class EnginePool:
             await self._unload_engine(model_id)
             return True
 
+    async def unload_for_battery(self, idle_seconds: float) -> list[str]:
+        """Unload loaded models idle for ``idle_seconds`` while on battery.
+
+        Pinned models and entries loading or serving a request are left
+        alone; the next request reloads a model on demand. Returns the
+        ids that unloaded.
+        """
+        cutoff = time.time() - max(0.0, idle_seconds)
+        unloaded = []
+        for model_id, entry in list(self._entries.items()):
+            if (
+                entry.engine is None
+                or entry.is_pinned
+                or entry.is_loading
+                or entry.in_use > 0
+                or entry.last_access > cutoff
+            ):
+                continue
+            if await self.unload_if_idle_unpinned(model_id):
+                unloaded.append(model_id)
+        return unloaded
+
     @asynccontextmanager
     async def acquire(self, model_id: str, force_lm: bool = False):
         """Acquire an engine with an atomic in-use lease.
