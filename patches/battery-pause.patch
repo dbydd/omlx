@@ -1,0 +1,252 @@
+diff --git a/omlx/admin/routes.py b/omlx/admin/routes.py
+index 83641af3..0c5ed833 100644
+--- a/omlx/admin/routes.py
++++ b/omlx/admin/routes.py
+@@ -653,6 +653,8 @@ class GlobalSettingsRequest(BaseModel):
+     burst_decode_mode: str | None = None  # "off" / "light" / "balanced" / "aggressive"
+     preserve_mid_system_cache: bool | None = None
+     gpu_keep_warm_interval: float | None = None
++    battery_poll_interval: float | None = None
++    battery_idle_seconds: float | None = None
+     qwen4_gdn_decode_wide_proj: bool | None = None
+     distributed_inference_enabled: bool | None = None
+     max_audio_upload_size: str | None = None
+@@ -4537,6 +4539,16 @@ def _global_settings_response(global_settings):
+                 "gpu_keep_warm_interval",
+                 0.5,
+             ),
++            "battery_poll_interval": getattr(
++                global_settings.server,
++                "battery_poll_interval",
++                0.0,
++            ),
++            "battery_idle_seconds": getattr(
++                global_settings.server,
++                "battery_idle_seconds",
++                120.0,
++            ),
+             "distributed_inference_enabled": getattr(
+                 global_settings.server,
+                 "distributed_inference_enabled",
+@@ -4860,6 +4872,16 @@ async def update_global_settings(
+             keep_warm_pool.configure_gpu_keep_warm(interval)
+             keep_warm_pool._ensure_gpu_keep_warm_task()
+         runtime_applied.append("gpu_keep_warm_interval")
++    if request.battery_poll_interval is not None:
++        global_settings.server.battery_poll_interval = max(
++            0.0, float(request.battery_poll_interval)
++        )
++        runtime_applied.append("battery_poll_interval")
++    if request.battery_idle_seconds is not None:
++        global_settings.server.battery_idle_seconds = max(
++            0.0, float(request.battery_idle_seconds)
++        )
++        runtime_applied.append("battery_idle_seconds")
+     if request.distributed_inference_enabled is not None:
+         # Route exposure and Bonjour publication are fixed at process startup,
+         # so this intentionally takes effect after the normal settings restart.
+diff --git a/omlx/engine_pool.py b/omlx/engine_pool.py
+index 266150a2..c451d574 100644
+--- a/omlx/engine_pool.py
++++ b/omlx/engine_pool.py
+@@ -2531,6 +2531,28 @@ class EnginePool:
+             await self._unload_engine(model_id)
+             return True
+ 
++    async def unload_for_battery(self, idle_seconds: float) -> list[str]:
++        """Unload loaded models idle for ``idle_seconds`` while on battery.
++
++        Pinned models and entries loading or serving a request are left
++        alone; the next request reloads a model on demand. Returns the
++        ids that unloaded.
++        """
++        cutoff = time.time() - max(0.0, idle_seconds)
++        unloaded = []
++        for model_id, entry in list(self._entries.items()):
++            if (
++                entry.engine is None
++                or entry.is_pinned
++                or entry.is_loading
++                or entry.in_use > 0
++                or entry.last_access > cutoff
++            ):
++                continue
++            if await self.unload_if_idle_unpinned(model_id):
++                unloaded.append(model_id)
++        return unloaded
++
+     @asynccontextmanager
+     async def acquire(self, model_id: str, force_lm: bool = False):
+         """Acquire an engine with an atomic in-use lease.
+diff --git a/omlx/server.py b/omlx/server.py
+index 78903704..8ea534a2 100644
+--- a/omlx/server.py
++++ b/omlx/server.py
+@@ -46,6 +46,8 @@ import inspect
+ import json
+ import logging
+ import os
++import subprocess
++import sys
+ import time
+ import uuid
+ from collections.abc import AsyncIterator, Awaitable, Callable
+@@ -446,6 +448,23 @@ def _reset_boundary_snapshots_for_server() -> None:
+         logger.warning("Failed to reset boundary snapshot directory: %s", exc)
+ 
+ 
++def _on_battery_power() -> bool | None:
++    """True on battery, False on AC, None when the power state cannot be read."""
++    if sys.platform != "darwin":
++        return None
++    try:
++        head = subprocess.run(
++            ["pmset", "-g", "ps"],
++            capture_output=True,
++            text=True,
++            timeout=5,
++            check=False,
++        ).stdout.splitlines()[0]
++    except Exception:  # pragma: no cover - pmset hiccups must not stop the loop
++        return None
++    return "AC Power" not in head
++
++
+ @asynccontextmanager
+ async def lifespan(app: FastAPI):
+     """FastAPI lifespan for startup/shutdown events."""
+@@ -665,6 +684,60 @@ async def lifespan(app: FastAPI):
+ 
+         ttl_task = asyncio.create_task(_ttl_check_loop())
+ 
++    # Battery pause: while on battery, unload unpinned models once they have
++    # been idle for server.battery_idle_seconds, so away from AC power only
++    # the server stays resident. A request reloads on demand and plugging in
++    # needs no action. The loop reads its settings every tick, so enabling
++    # the feature in the admin settings applies without a restart.
++    battery_task = None
++    if sys.platform == "darwin":
++
++        async def _battery_pause_loop() -> None:
++            seen: bool | None = None
++            while True:
++                try:
++                    gs = _server_state.global_settings
++                    poll = (
++                        float(getattr(gs.server, "battery_poll_interval", 0.0))
++                        if gs
++                        else 0.0
++                    )
++                    if poll <= 0:
++                        seen = None
++                        await asyncio.sleep(30.0)
++                        continue
++                    idle = (
++                        float(getattr(gs.server, "battery_idle_seconds", 120.0))
++                        if gs
++                        else 120.0
++                    )
++                    battery = _on_battery_power()
++                    if battery is not None and battery != seen:
++                        logger.info(
++                            "Battery pause enabled: %s, unload after %ss"
++                            " idle (checked every %ss)",
++                            "on battery" if battery else "on AC",
++                            int(idle),
++                            int(poll),
++                        )
++                        seen = battery
++                    if battery and _server_state.engine_pool is not None:
++                        unloaded = await _server_state.engine_pool.unload_for_battery(
++                            idle
++                        )
++                        if unloaded:
++                            logger.info(
++                                "Battery pause: unloaded %s", ", ".join(unloaded)
++                            )
++                    await asyncio.sleep(max(1.0, poll))
++                except asyncio.CancelledError:
++                    break
++                except Exception as e:
++                    logger.error(f"Battery pause error: {e}")
++                    await asyncio.sleep(30.0)
++
++        battery_task = asyncio.create_task(_battery_pause_loop())
++
+     # Initialize MCP if config provided
+     # Priority: env var > settings.json
+     mcp_config = os.environ.get("OMLX_MCP_CONFIG")
+@@ -715,6 +788,12 @@ async def lifespan(app: FastAPI):
+             await ttl_task
+         except asyncio.CancelledError:
+             pass
++    if battery_task is not None:
++        battery_task.cancel()
++        try:
++            await battery_task
++        except asyncio.CancelledError:
++            pass
+     if _server_state.process_memory_enforcer is not None:
+         await _server_state.process_memory_enforcer.stop()
+         if _server_state.engine_pool is not None:
+diff --git a/omlx/settings.py b/omlx/settings.py
+index 23369a73..fc152e34 100644
+--- a/omlx/settings.py
++++ b/omlx/settings.py
+@@ -215,6 +215,13 @@ class ServerSettings:
+     # large resident models). Ticks stop after 5 minutes without requests.
+     # 0 disables.
+     gpu_keep_warm_interval: float = 0.5
++    # Battery pause (macOS): while running on battery, unload unpinned models
++    # once they have been idle for battery_idle_seconds, so the machine keeps
++    # only the server resident away from AC power. A request reloads a model
++    # on demand and plugging back in needs no action. battery_poll_interval
++    # is the seconds between power checks; 0 disables the feature.
++    battery_poll_interval: float = 0.0
++    battery_idle_seconds: float = 120.0
+ 
+     def max_audio_upload_bytes(self) -> int:
+         """Configured audio upload limit in bytes. Non-positive sizes raise ValueError."""
+@@ -265,6 +272,8 @@ class ServerSettings:
+             max_request_body_size=data.get("max_request_body_size", "512MB"),
+             max_image_side_length=data.get("max_image_side_length", 2048),
+             gpu_keep_warm_interval=float(data.get("gpu_keep_warm_interval", 0.5)),
++            battery_poll_interval=float(data.get("battery_poll_interval", 0.0)),
++            battery_idle_seconds=float(data.get("battery_idle_seconds", 120.0)),
+         )
+ 
+ 
+diff --git a/tests/test_settings.py b/tests/test_settings.py
+index 416b71e9..d311387b 100644
+--- a/tests/test_settings.py
++++ b/tests/test_settings.py
+@@ -59,6 +59,20 @@ class TestServerSettings:
+         assert settings.max_image_upload_size == "50MB"
+         assert settings.max_image_upload_bytes() == 50 * 1024 * 1024
+         assert settings.max_image_side_length == 2048
++        # battery pause is off until battery_poll_interval is set
++        assert settings.battery_poll_interval == 0.0
++        assert settings.battery_idle_seconds == 120.0
++
++    def test_battery_pause_from_dict(self):
++        """Battery pause settings round-trip through from_dict."""
++        settings = ServerSettings.from_dict(
++            {"battery_poll_interval": 15, "battery_idle_seconds": 60}
++        )
++        assert settings.battery_poll_interval == 15.0
++        assert settings.battery_idle_seconds == 60.0
++        defaults = ServerSettings.from_dict({})
++        assert defaults.battery_poll_interval == 0.0
++        assert defaults.battery_idle_seconds == 120.0
+ 
+     def test_custom_values(self):
+         """Test custom values."""
+@@ -94,6 +108,8 @@ class TestServerSettings:
+             "max_request_body_size": "512MB",
+             "max_image_side_length": 2048,
+             "gpu_keep_warm_interval": 0.5,
++            "battery_poll_interval": 0.0,
++            "battery_idle_seconds": 120.0,
+         }
+ 
+     def test_qwen4_decode_setting_round_trip(self):
