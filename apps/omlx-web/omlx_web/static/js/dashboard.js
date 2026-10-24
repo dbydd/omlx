@@ -28,6 +28,7 @@
         'max_tool_result_tokens',
         'index_cache_freq',
         'turboquant_kv_enabled',
+        'turboquant_kv_scheme',
         'turboquant_kv_bits',
         'turboquant_skip_last',
         'qwen35_ane_prefill_enabled',
@@ -58,16 +59,8 @@
         'dflash_draft_model',
         'dflash_draft_quant_enabled',
         'dflash_draft_quant_weight_bits',
-        'dflash_draft_quant_activation_bits',
         'dflash_draft_quant_group_size',
-        'dflash_max_ctx',
-        'dflash_in_memory_cache',
-        'dflash_in_memory_cache_max_entries',
-        'dflash_in_memory_cache_max_bytes',
-        'dflash_ssd_cache',
-        'dflash_ssd_cache_max_bytes',
         'dflash_draft_window_size',
-        'dflash_draft_sink_size',
         'dflash_block_size',
         'dflash_verify_mode',
         'mtp_enabled',
@@ -101,6 +94,7 @@
     const DASHBOARD_SETTINGS_TABS = new Set(['global', 'integrations', 'models']);
     const DASHBOARD_MODELS_TABS = new Set(['manager', 'downloader', 'quantizer', 'uploader']);
     const DASHBOARD_BENCH_TABS = new Set(['throughput', 'accuracy', 'context']);
+    const DASHBOARD_DOWNLOADER_SOURCES = new Set(['hf', 'ms', 'recommended']);
     const THEME_STORAGE_KEY = 'omlx-chat-theme';
     const ENHANCED_READABILITY_KEY = 'omlx-enhanced-readability';
 
@@ -130,30 +124,6 @@
         standard: { mmlu: 1000, truthfulqa: 0, humaneval: 0 },
     };
     const ACC_PRESET_NAMES = ['quick', 'standard', 'full'];
-
-    // Chinese counts in ten-thousands: 万/亿/万亿 (zh) and 萬/億/兆 (zh-TW), the
-    // exact grouped figure below 10,000. Returns null for every other language.
-    function chineseCount(value) {
-        const lang = typeof document !== 'undefined' ? document.documentElement?.lang : '';
-        if (lang !== 'zh' && lang !== 'zh-TW') return null;
-        const number = Number(value);
-        if (!Number.isFinite(number)) return null;
-        const units = lang === 'zh-TW' ? ['萬', '億', '兆'] : ['万', '亿', '万亿'];
-        const scales = [1e4, 1e8, 1e12];
-        const magnitude = Math.abs(number);
-        let step = scales.length - 1;
-        while (step >= 0 && magnitude < scales[step]) step -= 1;
-        if (step < 0) return Math.round(number).toLocaleString(lang);
-        let mantissa = (magnitude / scales[step]).toFixed(1);
-        // 10,000万 is 1亿: the unit follows the printed mantissa.
-        if (Number(mantissa) >= 10000 && step < scales.length - 1) {
-            step += 1;
-            mantissa = (magnitude / scales[step]).toFixed(1);
-        }
-        const [whole, fraction] = mantissa.replace(/\.0$/, '').split('.');
-        const text = Number(whole).toLocaleString(lang) + (fraction ? '.' + fraction : '');
-        return (number < 0 ? '-' : '') + text + units[step];
-    }
 
     function dashboard() {
         // GridStack instance and helpers stay outside the reactive Alpine state.
@@ -191,7 +161,7 @@
             // Global settings
             globalSettings: {
                 base_path: '',
-                server: { host: '127.0.0.1', port: 8000, log_level: 'info', sse_keepalive_mode: 'chunk', burst_decode_mode: 'balanced', preserve_mid_system_cache: true, qwen4_gdn_decode_wide_proj: false, distributed_inference_enabled: false, distributed_inference_active: false, max_audio_upload_size: '100MB' },
+                server: { host: '127.0.0.1', port: 8000, log_level: 'info', sse_keepalive_mode: 'chunk', burst_decode_mode: 'balanced', preserve_mid_system_cache: true, distributed_inference_enabled: false, distributed_inference_active: false, max_audio_upload_size: '100MB' },
                 model: { model_dirs: [''], model_fallback: false, hide_helper_models: false },
                 memory: { prefill_memory_guard: true, memory_guard_tier: 'balanced', memory_guard_custom_ceiling_gb: 0 },
                 scheduler: { max_concurrent_requests: 8, embedding_batch_size: 32, chunked_prefill: false, prefill_priority: 'context', decode_fairness: true },
@@ -201,8 +171,8 @@
                 usage: { usage_history: true },
                 huggingface: { endpoint: '', hf_cache_enabled: true, hf_cache_path: '' },
                 network: { http_proxy: '', https_proxy: '', no_proxy: '', ca_bundle: '' },
-                auth: { api_key_set: false, api_key: '', skip_api_key_verification: false, sub_keys: [] },
-                claude_code: { mode: 'cloud', opus_model: null, sonnet_model: null, haiku_model: null },
+                auth: { api_key_set: false, api_key: '', skip_api_key_verification: false, allow_unauthenticated_inference: false, sub_keys: [] },
+                claude_code: { mode: 'cloud', opus_model: null, sonnet_model: null, haiku_model: null, desktop_enabled: false },
                 integrations: {
                     copilot_model: null,
                     codex_model: null,
@@ -245,6 +215,8 @@
             // Splash launcher path row: manual entry when not detected or changed
             splashPath: { editing: false, draft: '', error: '', saving: false },
             splashOptionsError: '',
+            // Claude Desktop gateway profile state (macOS auto-config)
+            claudeDesktop: { configured: false, working: false, message: '' },
             // Engines selectable for the DDGS Custom provider (ddgs 9.14.1 text registry)
             ddgsBackendList: ['brave', 'duckduckgo', 'grokipedia', 'mojeek', 'wikipedia', 'yahoo', 'yandex'],
 
@@ -329,6 +301,7 @@
                 qwen35_oq_a8_min_tokens: 128,
                 external_engine: '',
                 external_engines: [],
+                model_format: null,
                 trust_remote_code: false,
                 embedding_audio_enabled: false,
                 embedding_audio_max_seconds: null,
@@ -445,6 +418,7 @@
             },
 
             statsScope: 'session',
+            statsNumberScale: window.omlxCount?.scale?.() || 'compact',
             // Dashboard block layout (see dashboard_layout.js)
             dashLayout: null,
             dashDraft: null,
@@ -518,7 +492,9 @@
             hfRecommendedLoaded: false,
             hfRecommendedLoading: false,
             hfRecommendedTab: 'trending',
-            hfMlxOnly: true,
+            // Downloader repo filter: 'mlx', 'gguf' or 'all'.
+            hfModelFormat: ['mlx', 'gguf', 'all'].includes(localStorage.getItem('hfModelFormat'))
+                ? localStorage.getItem('hfModelFormat') : 'mlx',
 
             // Pagination state
             hfPage: { trending: 1, popular: 1, search: 1 },
@@ -553,6 +529,23 @@
             // Model detail modal
             hfModelDetail: null,
             hfModelDetailLoading: false,
+            hfDetailTab: 'card',
+            // File name -> picked for download, for the detail modal's Files tab.
+            hfSelectedFiles: {},
+
+            // Recommended (hardware-aware oQ picks) state
+            recommendations: null,
+            recommendationsLoading: false,
+            recommendationsError: '',
+            recommendationsApplying: false,
+            // null follows the default: open unless the Mac has 16 GB or less.
+            recommendationsUnlockOpen: null,
+
+            // First-run banner. Only shown when the first model list was empty;
+            // dismissing hides it until the next page load.
+            onboardingStartedEmpty: false,
+            onboardingDismissed: false,
+            onboardingReadyDismissed: false,
 
             // ModelScope Downloader state
             downloaderSource: 'hf',
@@ -608,6 +601,7 @@
             oqDtype: 'bfloat16',
             oqSensitivityModelPath: '',
             oqPreserveMtp: false,
+            oqPreserveNgram: false,
             oqMtpAssistantPath: '',
             oqEnhanced: false,
             oqeReuseImatrixCache: true,
@@ -787,7 +781,15 @@
                     this.checkForUpdate()
                 ]);
 
+                this.fetchClaudeDesktopStatus();
+
                 this.startUpdateCheckTimer();
+
+                this.onboardingStartedEmpty = !this.hasUserModels;
+                if (this.onboardingStartedEmpty
+                    && !new URLSearchParams(window.location.search).has('source')) {
+                    this.downloaderSource = 'recommended';
+                }
 
                 await this.handleMainTabChange(this.mainTab);
                 this.settingsScrollToHash();
@@ -814,7 +816,8 @@
                     }
                 });
 
-                this.$watch('hfMlxOnly', () => {
+                this.$watch('hfModelFormat', (value) => {
+                    localStorage.setItem('hfModelFormat', value);
                     this.hfRecommended = { trending: [], popular: [] };
                     this.hfRecommendedLoaded = false;
                     this.hfSearchResults = [];
@@ -874,6 +877,9 @@
                     if (this.modelsTab === 'downloader' && !this.hfRecommendedLoaded) {
                         loads.push(this.loadRecommendedModels());
                     }
+                    if (this.modelsTab === 'downloader' && this.downloaderSource === 'recommended') {
+                        loads.push(this.loadRecommendations());
+                    }
                     if (this.modelsTab === 'quantizer') {
                         loads.push(this.loadOQModels());
                     }
@@ -902,6 +908,11 @@
                     await this.loadAccState();
                     await this.loadCtxBenchState();
                 }
+                // The first-run banner shows download progress on the dashboard.
+                if (value === 'status' && this.onboardingStartedEmpty) {
+                    await this.loadHFTasks();
+                    if (this.onboardingTask) this.startHFRefresh();
+                }
             },
 
             applyTabStateFromUrl() {
@@ -916,6 +927,8 @@
                 this.activeTab = DASHBOARD_SETTINGS_TABS.has(settingsTab) ? settingsTab : 'global';
                 this.modelsTab = DASHBOARD_MODELS_TABS.has(modelsTab) ? modelsTab : 'manager';
                 this.benchTab = DASHBOARD_BENCH_TABS.has(benchTab) ? benchTab : 'throughput';
+                const source = params.get('source');
+                if (DASHBOARD_DOWNLOADER_SOURCES.has(source)) this.downloaderSource = source;
 
                 // A section anchor opens global settings unless the URL names another tab.
                 const section = window.location.hash.slice(1);
@@ -940,6 +953,12 @@
                     url.searchParams.set('modelsTab', this.modelsTab);
                 } else {
                     url.searchParams.delete('modelsTab');
+                }
+
+                if (this.mainTab === 'models' && this.modelsTab === 'downloader') {
+                    url.searchParams.set('source', this.downloaderSource);
+                } else {
+                    url.searchParams.delete('source');
                 }
 
                 if (this.mainTab === 'bench') {
@@ -1123,6 +1142,22 @@
                     if (!this.uploadOqModelsLoaded) this.loadUploadOqModels();
                     this.loadUploadTasks();
                 }
+                if (tab === 'downloader' && this.downloaderSource === 'recommended') {
+                    this.loadRecommendations();
+                }
+            },
+
+            setDownloaderSource(source) {
+                if (!DASHBOARD_DOWNLOADER_SOURCES.has(source)) return;
+                this.downloaderSource = source;
+                this.syncTabStateToUrl();
+                if (source === 'ms') this.initMsDownloader();
+                if (source === 'recommended') this.loadRecommendations();
+            },
+
+            openRecommendations() {
+                this.downloaderSource = 'recommended';
+                this.setModelsTab('downloader');
             },
 
            async checkForUpdate() {
@@ -1294,6 +1329,15 @@
                 }
             },
 
+            toggleUnauthenticatedInference() {
+                const auth = this.globalSettings.auth;
+                if (!auth.allow_unauthenticated_inference
+                    && !window.confirm(window.t('settings.auth.keyless_inference_confirm'))) {
+                    return;
+                }
+                auth.allow_unauthenticated_inference = !auth.allow_unauthenticated_inference;
+            },
+
             isLoopbackBindHost(value) {
                 const hosts = String(value || '')
                     .split(',')
@@ -1386,7 +1430,8 @@
                             sse_keepalive_mode: this.globalSettings.server.sse_keepalive_mode,
                             burst_decode_mode: this.globalSettings.server.burst_decode_mode,
                             preserve_mid_system_cache: this.globalSettings.server.preserve_mid_system_cache,
-                            qwen4_gdn_decode_wide_proj: this.globalSettings.server.qwen4_gdn_decode_wide_proj,
+                            battery_poll_interval: this.globalSettings.server.battery_poll_interval,
+                            power_states: this.globalSettings.server.power_states,
                             distributed_inference_enabled: this.globalSettings.server.distributed_inference_enabled,
                             max_audio_upload_size: this.globalSettings.server.max_audio_upload_size,
                             model_dirs: this.globalSettings.model.model_dirs.filter(d => d.trim()),
@@ -1430,6 +1475,7 @@
                             network_ca_bundle: this.globalSettings.network.ca_bundle,
                             ...(this.globalSettings.auth.api_key ? { api_key: this.globalSettings.auth.api_key } : {}),
                             skip_api_key_verification: this.globalSettings.auth.skip_api_key_verification,
+                            allow_unauthenticated_inference: this.globalSettings.auth.allow_unauthenticated_inference,
                             idle_timeout_seconds: this.globalSettings.idle_timeout?.idle_timeout_seconds ?? null,
                         }),
                     });
@@ -2103,6 +2149,10 @@
                         s.deepseek_v41_ced_prefill_enabled === true,
                     deepseek_v41_ced_prefill_supported:
                         String(model?.config_model_type || '').toLowerCase().replaceAll('-', '_') === 'deepseek_v41',
+                    qwen4_gdn_decode_wide_proj:
+                        s.qwen4_gdn_decode_wide_proj === true,
+                    qwen4_gdn_decode_wide_proj_supported:
+                        String(model?.config_model_type || '').toLowerCase().replaceAll('-', '_') === 'qwen4_exp',
                     deepseek_v41_engram_ssd_offload: model?.deepseek_v41_engram_ssd_offload_forced === true
                         || s.deepseek_v41_engram_ssd_offload === true,
                     deepseek_v41_engram_ssd_offload_requested:
@@ -2121,8 +2171,12 @@
                     ttl_seconds: s.ttl_seconds ?? null,
                     enableIndexCache: !!(s.index_cache_freq),
                     index_cache_freq: s.index_cache_freq || null,
-                    turboquant_kv_enabled: s.turboquant_kv_enabled || false,
-                    turboquant_kv_bits: s.turboquant_kv_bits || 4,
+                    turboquant_kv_enabled: !isDiffusion && !model?.is_paroquant
+                        && (s.turboquant_kv_enabled || false),
+                    turboquant_kv_scheme: isDiffusion || model?.is_paroquant
+                        ? 'turboquant' : (s.turboquant_kv_scheme || 'turboquant'),
+                    turboquant_kv_bits: isDiffusion || model?.is_paroquant
+                        ? 4 : (s.turboquant_kv_bits || 4),
                     moe_expert_offload_enabled: !isDiffusion && model?.moe_expert_offload_supported === true && !!s.moe_expert_offload_enabled,
                     moe_expert_offload_resident_fraction: s.moe_expert_offload_resident_fraction ?? 0.25,
                     moe_expert_offload_resident_percent: Number(((s.moe_expert_offload_resident_fraction ?? 0.25) * 100).toPrecision(15)),
@@ -2154,25 +2208,12 @@
                     dflash_draft_model: s.dflash_draft_model || '',
                     dflash_draft_quant_enabled: s.dflash_draft_quant_enabled || false,
                     dflash_draft_quant_weight_bits: s.dflash_draft_quant_weight_bits || 4,
-                    dflash_draft_quant_activation_bits: s.dflash_draft_quant_activation_bits || 16,
                     dflash_draft_quant_group_size: s.dflash_draft_quant_group_size || 64,
-                    dflash_max_ctx: s.dflash_max_ctx ?? null,
-                    dflash_in_memory_cache: s.dflash_in_memory_cache !== false,
-                    dflash_in_memory_cache_max_entries: s.dflash_in_memory_cache_max_entries || 4,
-                    dflash_in_memory_cache_max_gib: s.dflash_in_memory_cache_max_bytes
-                        ? Math.round(s.dflash_in_memory_cache_max_bytes / (1024 ** 3))
-                        : 8,
-                    dflash_ssd_cache: s.dflash_ssd_cache || false,
-                    dflash_ssd_cache_max_gib: s.dflash_ssd_cache_max_bytes
-                        ? Math.round(s.dflash_ssd_cache_max_bytes / (1024 ** 3))
-                        : 20,
                     dflash_draft_window_size: s.dflash_draft_window_size ?? null,
-                    dflash_draft_sink_size: s.dflash_draft_sink_size ?? 0,
                     dflash_block_size: s.dflash_block_size ?? null,
                     dflash_verify_mode: s.dflash_verify_mode || 'adaptive',
                     dflash_compatible: model?.dflash_compatible !== false,
                     dflash_compatibility_reason: model?.dflash_compatibility_reason || '',
-                    dflash_ssd_cache_available: !!model?.dflash_ssd_cache_available,
                     mtp_enabled: s.mtp_enabled || false,
                     mtp_adaptive_max_depth: [3, 4, 5, 6].includes(s.mtp_adaptive_max_depth)
                         ? String(s.mtp_adaptive_max_depth) : '3',
@@ -2188,6 +2229,7 @@
                     is_diffusion_model: isDiffusion,
                     external_engine: s.external_engine || '',
                     external_engines: model?.external_engines || [],
+                    model_format: model?.model_format || null,
                     trust_remote_code: s.trust_remote_code || false,
                     embedding_audio_enabled: s.embedding_audio_enabled || false,
                     embedding_audio_max_seconds: s.embedding_audio_max_seconds ?? null,
@@ -2977,6 +3019,14 @@
                     || ['qwen3_5', 'qwen3_6', 'qwen3_8'].some(prefix => type.startsWith(prefix));
             },
 
+            // The kernels need native INT8 tensor ops (M5-series or newer).
+            // A saved "on" keeps the toggle so it can be turned off.
+            showsQwenOqA8(model) {
+                return this.isQwenOqA8Model(model)
+                    && (model?.qwen35_oq_a8_supported === true
+                        || model?.settings?.qwen35_oq_a8_enabled === true);
+            },
+
             validateQwenOqA8Settings() {
                 if (!this.modelSettings.qwen35_oq_a8_enabled) return null;
                 // Both wrap the same MLP call, so the combination silently
@@ -3069,6 +3119,232 @@
                 return null;
             },
 
+            buildModelSettingsPayload(ms) {
+                const isDiffusion = !!ms.is_diffusion_model;
+                // Build chat_template_kwargs and forced_ct_kwargs from ctKwargEntries
+                const chatTemplateKwargs = {};
+                const forcedCtKwargs = [];
+                for (const entry of ms.ctKwargEntries) {
+                    if (entry.type === 'enable_thinking') {
+                        if (isDiffusion) continue;
+                        chatTemplateKwargs.enable_thinking = entry.value === 'true';
+                        if (entry.force) forcedCtKwargs.push('enable_thinking');
+                    } else if (entry.type === 'reasoning_effort') {
+                        if (isDiffusion) continue;
+                        const rawEffort = entry.custom
+                            ? entry.customValue
+                            : entry.value;
+                        const effort = this.coerceKwargValue(rawEffort);
+                        if (String(effort).trim() !== '') {
+                            chatTemplateKwargs.reasoning_effort = effort;
+                            if (entry.force) forcedCtKwargs.push('reasoning_effort');
+                        }
+                    } else if (entry.type === 'custom' && entry.key && entry.key.trim()) {
+                        const val = this.coerceKwargValue(entry.value);
+                        const key = entry.key.trim();
+                        if (isDiffusion && this.isDiffusionUnsupportedCtKwarg(key)) {
+                            continue;
+                        }
+                        chatTemplateKwargs[key] = val;
+                        if (entry.force) forcedCtKwargs.push(key);
+                    }
+                }
+                const payload = {
+                    model_alias: ms.model_alias?.trim() || null,
+                    model_type_override: ms.model_type_override || null,
+                    max_context_window: ms.max_context_window || null,
+                    max_tokens: ms.max_tokens || null,
+                    temperature: Number.isFinite(ms.temperature) ? ms.temperature : null,
+                    top_p: Number.isFinite(ms.top_p) ? ms.top_p : null,
+                    top_k: Number.isFinite(ms.top_k) ? ms.top_k : null,
+                    repetition_penalty: Number.isFinite(ms.repetition_penalty) ? ms.repetition_penalty : null,
+                    min_p: Number.isFinite(ms.min_p) ? ms.min_p : null,
+                    presence_penalty: Number.isFinite(ms.presence_penalty) ? ms.presence_penalty : null,
+                    force_sampling: ms.force_sampling,
+                    reasoning_parser: ms.reasoning_parser || null,
+                    ttl_seconds: ms.ttl_seconds || null,
+                    index_cache_freq: ms.enableIndexCache
+                        ? (ms.index_cache_freq || 4)
+                        : 0,
+                    enable_thinking: this.selectedModel?.thinking_forced ? null : ms.enable_thinking,
+                    qwen4_ple_ssd_offload:
+                        ms.qwen4_ple_ssd_offload_forced
+                            ? !!ms.qwen4_ple_ssd_offload_requested
+                            : !!ms.qwen4_ple_ssd_offload,
+                    deepseek_v41_ced_prefill_enabled:
+                        !!ms.deepseek_v41_ced_prefill_enabled,
+                    qwen4_gdn_decode_wide_proj:
+                        !!ms.qwen4_gdn_decode_wide_proj,
+                    deepseek_v41_engram_ssd_offload:
+                        ms.deepseek_v41_engram_ssd_offload_forced
+                            ? !!ms.deepseek_v41_engram_ssd_offload_requested
+                            : !!ms.deepseek_v41_engram_ssd_offload,
+                    thinking_budget_enabled: ms.enableThinkingBudget,
+                    thinking_budget_tokens: ms.enableThinkingBudget
+                        ? (ms.thinking_budget_tokens || null)
+                        : 0,
+                    guided_grammar_enabled: ms.guided_grammar_enabled,
+                    guided_grammar: ms.guided_grammar_enabled
+                        ? (ms.guided_grammar || null)
+                        : null,
+                    max_tool_result_tokens: ms.enableToolResultLimit
+                        ? (ms.max_tool_result_tokens || null)
+                        : 0,
+                    chat_template_kwargs: Object.keys(chatTemplateKwargs).length > 0
+                        ? chatTemplateKwargs : null,
+                    forced_ct_kwargs: forcedCtKwargs.length > 0
+                        ? forcedCtKwargs : null,
+                    turboquant_kv_enabled: ms.turboquant_kv_enabled,
+                    turboquant_kv_scheme: ms.turboquant_kv_scheme,
+                    // Affine formats have fixed widths, also while compression is off.
+                    turboquant_kv_bits: ms.turboquant_kv_scheme === 'affine8' ? 8
+                        : ms.turboquant_kv_scheme === 'affine4' ? 4
+                        : ms.turboquant_kv_enabled ? (parseFloat(ms.turboquant_kv_bits) || 4)
+                        : 4,
+                    moe_expert_offload_enabled: !isDiffusion && this.selectedModel?.moe_expert_offload_supported === true && !!ms.moe_expert_offload_enabled,
+                    moe_expert_offload_resident_fraction: ms.moe_expert_offload_resident_fraction ?? 0.25,
+                    qwen35_oq_a8_enabled: !!ms.qwen35_oq_a8_enabled,
+                    qwen35_oq_a8_min_tokens: Number(ms.qwen35_oq_a8_min_tokens) || 128,
+                    qwen35_ane_prefill_enabled: !!ms.qwen35_ane_prefill_enabled,
+                    // Validation only runs when the feature is enabled, so a
+                    // blank numeric input must fall back to the server default
+                    // instead of coercing to 0 and failing an unrelated save.
+                    qwen35_ane_prefill_sequence_length: Number(ms.qwen35_ane_prefill_sequence_length) || 2048,
+                    qwen35_ane_prefill_tail_padding_min_tokens: Number.isFinite(Number(ms.qwen35_ane_prefill_tail_padding_min_tokens))
+                        ? Number(ms.qwen35_ane_prefill_tail_padding_min_tokens)
+                        : 0,
+                    qwen35_ane_prefill_fraction: Number(ms.qwen35_ane_prefill_fraction),
+                    qwen35_ane_prefill_max_layers: Number(ms.qwen35_ane_prefill_max_layers) || 64,
+                    qwen35_ane_prefill_dual_ane: !!ms.qwen35_ane_prefill_dual_ane,
+                    qwen35_ane_prefill_gdn: !!ms.qwen35_ane_prefill_gdn,
+                    qwen35_ane_prefill_gdn_fraction: Number(ms.qwen35_ane_prefill_gdn_fraction) || 0.5,
+                    qwen35_ane_prefill_gdn_max_layers: Number.isFinite(Number(ms.qwen35_ane_prefill_gdn_max_layers))
+                        ? Number(ms.qwen35_ane_prefill_gdn_max_layers)
+                        : 48,
+                    qwen35_ane_prefill_cpu_enabled: !!ms.qwen35_ane_prefill_cpu_enabled,
+                    qwen35_ane_prefill_cpu_fraction: Number(ms.qwen35_ane_prefill_cpu_fraction),
+                    qwen35_ane_prefill_cpu_down_fraction: Number.isFinite(Number(ms.qwen35_ane_prefill_cpu_down_fraction))
+                        ? Number(ms.qwen35_ane_prefill_cpu_down_fraction)
+                        : 0,
+                    qwen35_ane_prefill_cpu_gdn_fraction: Number.isFinite(Number(ms.qwen35_ane_prefill_cpu_gdn_fraction))
+                        ? Number(ms.qwen35_ane_prefill_cpu_gdn_fraction)
+                        : 0,
+                    qwen35_ane_prefill_cpu_threads: Number.isFinite(Number(ms.qwen35_ane_prefill_cpu_threads))
+                        ? Number(ms.qwen35_ane_prefill_cpu_threads)
+                        : 8,
+                    qwen35_ane_prefill_cpu_shared_resource: !!ms.qwen35_ane_prefill_cpu_shared_resource,
+                    specprefill_enabled: ms.specprefill_enabled,
+                    specprefill_draft_model: ms.specprefill_draft_model || null,
+                    specprefill_keep_pct: ms.specprefill_enabled
+                        ? parseFloat(ms.specprefill_keep_pct) || 0.2
+                        : null,
+                    specprefill_threshold: ms.specprefill_enabled
+                        ? (ms.specprefill_threshold || null)
+                        : null,
+                    dflash_enabled: ms.dflash_enabled,
+                    dflash_draft_model: ms.dflash_draft_model || null,
+                    dflash_draft_quant_enabled: ms.dflash_enabled && !!ms.dflash_draft_quant_enabled,
+                    dflash_draft_quant_weight_bits: ms.dflash_enabled && ms.dflash_draft_quant_enabled
+                        ? parseInt(ms.dflash_draft_quant_weight_bits)
+                        : null,
+                    dflash_draft_quant_group_size: ms.dflash_enabled && ms.dflash_draft_quant_enabled
+                        ? parseInt(ms.dflash_draft_quant_group_size)
+                        : null,
+                    // Long-context tuning. Empty → oMLX default.
+                    dflash_draft_window_size: ms.dflash_enabled
+                        && ms.dflash_draft_window_size
+                        ? parseInt(ms.dflash_draft_window_size)
+                        : null,
+                    dflash_block_size: ms.dflash_enabled
+                        && ms.dflash_block_size
+                        ? parseInt(ms.dflash_block_size)
+                        : null,
+                    dflash_verify_mode: ms.dflash_enabled
+                        ? (ms.dflash_verify_mode || 'adaptive')
+                        : null,
+                    mtp_enabled: !!ms.mtp_enabled,
+                    mtp_adaptive_max_depth: ms.mtp_enabled
+                        ? parseInt(ms.mtp_adaptive_max_depth || '3')
+                        : null,
+                    mtp_fixed_depth: null,
+                    qwen35_ane_prefill_shared_fraction: Number(ms.qwen35_ane_prefill_shared_fraction),
+                    vlm_mtp_enabled: !!ms.vlm_mtp_enabled,
+                    vlm_mtp_draft_model: ms.vlm_mtp_enabled
+                        ? (ms.vlm_mtp_draft_model || null)
+                        : null,
+                    vlm_mtp_draft_block_size: ms.vlm_mtp_enabled
+                        && ms.vlm_mtp_draft_block_size
+                        ? parseInt(ms.vlm_mtp_draft_block_size)
+                        : null,
+                    trust_remote_code: ms.trust_remote_code,
+                    external_engine: ms.external_engine || null,
+                };
+                if (isDiffusion) {
+                    Object.assign(payload, {
+                        top_p: null,
+                        top_k: null,
+                        repetition_penalty: null,
+                        min_p: null,
+                        presence_penalty: null,
+                        force_sampling: false,
+                        reasoning_parser: null,
+                        index_cache_freq: 0,
+                        enable_thinking: null,
+                        thinking_budget_enabled: false,
+                        thinking_budget_tokens: 0,
+                        guided_grammar_enabled: false,
+                        guided_grammar: null,
+                        max_tool_result_tokens: 0,
+                        turboquant_kv_enabled: false,
+                        turboquant_kv_scheme: 'turboquant',
+                        turboquant_kv_bits: 4,
+                        qwen35_ane_prefill_enabled: false,
+                        qwen35_ane_prefill_sequence_length: 2048,
+                        qwen35_ane_prefill_tail_padding_min_tokens: 0,
+                        qwen35_ane_prefill_fraction: 0.53,
+                        qwen35_ane_prefill_max_layers: 64,
+                        qwen35_ane_prefill_dual_ane: true,
+                        qwen35_ane_prefill_gdn: true,
+                        qwen35_ane_prefill_gdn_fraction: 0.5,
+                        qwen35_ane_prefill_gdn_max_layers: 48,
+                        qwen35_ane_prefill_cpu_enabled: false,
+                        qwen35_ane_prefill_cpu_fraction: 0.135,
+                        qwen35_ane_prefill_cpu_down_fraction: 0,
+                        qwen35_ane_prefill_cpu_gdn_fraction: 0,
+                        qwen35_ane_prefill_cpu_threads: 8,
+                        qwen35_ane_prefill_cpu_shared_resource: true,
+                        specprefill_enabled: false,
+                        specprefill_draft_model: null,
+                        specprefill_keep_pct: null,
+                        specprefill_threshold: null,
+                        external_engine: null,
+                        dflash_enabled: false,
+                        dflash_draft_model: null,
+                        dflash_draft_quant_enabled: false,
+                        dflash_draft_quant_weight_bits: null,
+                        dflash_draft_quant_group_size: null,
+                        dflash_draft_window_size: null,
+                        dflash_block_size: null,
+                        dflash_verify_mode: null,
+                        mtp_enabled: false,
+                        mtp_adaptive_max_depth: null,
+                        mtp_fixed_depth: null,
+                        vlm_mtp_enabled: false,
+                        vlm_mtp_draft_model: null,
+                        vlm_mtp_draft_block_size: null,
+                    });
+                }
+                if (this.selectedModel?.embedding_audio_supported) {
+                    const audioSeconds = Number(ms.embedding_audio_max_seconds);
+                    Object.assign(payload, {
+                        embedding_audio_enabled: !!ms.embedding_audio_enabled,
+                        // Empty keeps the 30 s processor default.
+                        embedding_audio_max_seconds: audioSeconds > 0 ? audioSeconds : null,
+                    });
+                }
+                return payload;
+            },
+
             async saveModelSettings() {
                 if (!this.selectedModel) return;
 
@@ -3086,264 +3362,24 @@
 
                 this.savingModelSettings = true;
                 try {
+                    const payload = this.buildModelSettingsPayload(this.modelSettings);
+                    if (this._modelSettingsBaseline) {
+                        // Send only edited fields so a stale form does not overwrite other changes.
+                        // Always send mtp_fixed_depth: null to clear a legacy fixed depth.
+                        const initial = this.buildModelSettingsPayload(
+                            JSON.parse(this._modelSettingsBaseline),
+                        );
+                        for (const key of Object.keys(payload)) {
+                            if (key !== 'mtp_fixed_depth'
+                                && JSON.stringify(payload[key]) === JSON.stringify(initial[key])) {
+                                delete payload[key];
+                            }
+                        }
+                    }
                     const response = await fetch(`/admin/api/models/${encodeURIComponent(this.selectedModel.id)}/settings`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify((() => {
-                            const isDiffusion = !!this.modelSettings.is_diffusion_model;
-                            // Build chat_template_kwargs and forced_ct_kwargs from ctKwargEntries
-                            const chatTemplateKwargs = {};
-                            const forcedCtKwargs = [];
-                            for (const entry of this.modelSettings.ctKwargEntries) {
-                                if (entry.type === 'enable_thinking') {
-                                    if (isDiffusion) continue;
-                                    chatTemplateKwargs.enable_thinking = entry.value === 'true';
-                                    if (entry.force) forcedCtKwargs.push('enable_thinking');
-                                } else if (entry.type === 'reasoning_effort') {
-                                    if (isDiffusion) continue;
-                                    const rawEffort = entry.custom
-                                        ? entry.customValue
-                                        : entry.value;
-                                    const effort = this.coerceKwargValue(rawEffort);
-                                    if (String(effort).trim() !== '') {
-                                        chatTemplateKwargs.reasoning_effort = effort;
-                                        if (entry.force) forcedCtKwargs.push('reasoning_effort');
-                                    }
-                                } else if (entry.type === 'custom' && entry.key && entry.key.trim()) {
-                                    const val = this.coerceKwargValue(entry.value);
-                                    const key = entry.key.trim();
-                                    if (isDiffusion && this.isDiffusionUnsupportedCtKwarg(key)) {
-                                        continue;
-                                    }
-                                    chatTemplateKwargs[key] = val;
-                                    if (entry.force) forcedCtKwargs.push(key);
-                                }
-                            }
-                            const payload = {
-                                model_alias: this.modelSettings.model_alias?.trim() || null,
-                                model_type_override: this.modelSettings.model_type_override || null,
-                                max_context_window: this.modelSettings.max_context_window || null,
-                                max_tokens: this.modelSettings.max_tokens || null,
-                                temperature: Number.isFinite(this.modelSettings.temperature) ? this.modelSettings.temperature : null,
-                                top_p: Number.isFinite(this.modelSettings.top_p) ? this.modelSettings.top_p : null,
-                                top_k: Number.isFinite(this.modelSettings.top_k) ? this.modelSettings.top_k : null,
-                                repetition_penalty: Number.isFinite(this.modelSettings.repetition_penalty) ? this.modelSettings.repetition_penalty : null,
-                                min_p: Number.isFinite(this.modelSettings.min_p) ? this.modelSettings.min_p : null,
-                                presence_penalty: Number.isFinite(this.modelSettings.presence_penalty) ? this.modelSettings.presence_penalty : null,
-                                force_sampling: this.modelSettings.force_sampling,
-                                reasoning_parser: this.modelSettings.reasoning_parser || null,
-                                ttl_seconds: this.modelSettings.ttl_seconds || null,
-                                index_cache_freq: this.modelSettings.enableIndexCache
-                                    ? (this.modelSettings.index_cache_freq || 4)
-                                    : 0,
-                                enable_thinking: this.selectedModel?.thinking_forced ? null : this.modelSettings.enable_thinking,
-                                qwen4_ple_ssd_offload:
-                                    this.modelSettings.qwen4_ple_ssd_offload_forced
-                                        ? !!this.modelSettings.qwen4_ple_ssd_offload_requested
-                                        : !!this.modelSettings.qwen4_ple_ssd_offload,
-                                deepseek_v41_ced_prefill_enabled:
-                                    !!this.modelSettings.deepseek_v41_ced_prefill_enabled,
-                                deepseek_v41_engram_ssd_offload:
-                                    this.modelSettings.deepseek_v41_engram_ssd_offload_forced
-                                        ? !!this.modelSettings.deepseek_v41_engram_ssd_offload_requested
-                                        : !!this.modelSettings.deepseek_v41_engram_ssd_offload,
-                                thinking_budget_enabled: this.modelSettings.enableThinkingBudget,
-                                thinking_budget_tokens: this.modelSettings.enableThinkingBudget
-                                    ? (this.modelSettings.thinking_budget_tokens || null)
-                                    : 0,
-                                guided_grammar_enabled: this.modelSettings.guided_grammar_enabled,
-                                guided_grammar: this.modelSettings.guided_grammar_enabled
-                                    ? (this.modelSettings.guided_grammar || null)
-                                    : null,
-                                max_tool_result_tokens: this.modelSettings.enableToolResultLimit
-                                    ? (this.modelSettings.max_tool_result_tokens || null)
-                                    : 0,
-                                chat_template_kwargs: Object.keys(chatTemplateKwargs).length > 0
-                                    ? chatTemplateKwargs : null,
-                                forced_ct_kwargs: forcedCtKwargs.length > 0
-                                    ? forcedCtKwargs : null,
-                                turboquant_kv_enabled: this.modelSettings.turboquant_kv_enabled,
-                                turboquant_kv_bits: this.modelSettings.turboquant_kv_enabled
-                                    ? (parseFloat(this.modelSettings.turboquant_kv_bits) || 4)
-                                    : 4,
-                                moe_expert_offload_enabled: !isDiffusion && this.selectedModel?.moe_expert_offload_supported === true && !!this.modelSettings.moe_expert_offload_enabled,
-                                moe_expert_offload_resident_fraction: this.modelSettings.moe_expert_offload_resident_fraction ?? 0.25,
-                                qwen35_oq_a8_enabled: !!this.modelSettings.qwen35_oq_a8_enabled,
-                                qwen35_oq_a8_min_tokens: Number(this.modelSettings.qwen35_oq_a8_min_tokens) || 128,
-                                qwen35_ane_prefill_enabled: !!this.modelSettings.qwen35_ane_prefill_enabled,
-                                // Validation only runs when the feature is enabled, so a
-                                // blank numeric input must fall back to the server default
-                                // instead of coercing to 0 and failing an unrelated save.
-                                qwen35_ane_prefill_sequence_length: Number(this.modelSettings.qwen35_ane_prefill_sequence_length) || 2048,
-                                qwen35_ane_prefill_tail_padding_min_tokens: Number.isFinite(Number(this.modelSettings.qwen35_ane_prefill_tail_padding_min_tokens))
-                                    ? Number(this.modelSettings.qwen35_ane_prefill_tail_padding_min_tokens)
-                                    : 0,
-                                qwen35_ane_prefill_fraction: Number(this.modelSettings.qwen35_ane_prefill_fraction),
-                                qwen35_ane_prefill_max_layers: Number(this.modelSettings.qwen35_ane_prefill_max_layers) || 64,
-                                qwen35_ane_prefill_dual_ane: !!this.modelSettings.qwen35_ane_prefill_dual_ane,
-                                qwen35_ane_prefill_gdn: !!this.modelSettings.qwen35_ane_prefill_gdn,
-                                qwen35_ane_prefill_gdn_fraction: Number(this.modelSettings.qwen35_ane_prefill_gdn_fraction) || 0.5,
-                                qwen35_ane_prefill_gdn_max_layers: Number.isFinite(Number(this.modelSettings.qwen35_ane_prefill_gdn_max_layers))
-                                    ? Number(this.modelSettings.qwen35_ane_prefill_gdn_max_layers)
-                                    : 48,
-                                qwen35_ane_prefill_cpu_enabled: !!this.modelSettings.qwen35_ane_prefill_cpu_enabled,
-                                qwen35_ane_prefill_cpu_fraction: Number(this.modelSettings.qwen35_ane_prefill_cpu_fraction),
-                                qwen35_ane_prefill_cpu_down_fraction: Number.isFinite(Number(this.modelSettings.qwen35_ane_prefill_cpu_down_fraction))
-                                    ? Number(this.modelSettings.qwen35_ane_prefill_cpu_down_fraction)
-                                    : 0,
-                                qwen35_ane_prefill_cpu_gdn_fraction: Number.isFinite(Number(this.modelSettings.qwen35_ane_prefill_cpu_gdn_fraction))
-                                    ? Number(this.modelSettings.qwen35_ane_prefill_cpu_gdn_fraction)
-                                    : 0,
-                                qwen35_ane_prefill_cpu_threads: Number.isFinite(Number(this.modelSettings.qwen35_ane_prefill_cpu_threads))
-                                    ? Number(this.modelSettings.qwen35_ane_prefill_cpu_threads)
-                                    : 8,
-                                qwen35_ane_prefill_cpu_shared_resource: !!this.modelSettings.qwen35_ane_prefill_cpu_shared_resource,
-                                specprefill_enabled: this.modelSettings.specprefill_enabled,
-                                specprefill_draft_model: this.modelSettings.specprefill_draft_model || null,
-                                specprefill_keep_pct: this.modelSettings.specprefill_enabled
-                                    ? parseFloat(this.modelSettings.specprefill_keep_pct) || 0.2
-                                    : null,
-                                specprefill_threshold: this.modelSettings.specprefill_enabled
-                                    ? (this.modelSettings.specprefill_threshold || null)
-                                    : null,
-                                dflash_enabled: this.modelSettings.dflash_enabled,
-                                dflash_draft_model: this.modelSettings.dflash_draft_model || null,
-                                dflash_draft_quant_enabled: this.modelSettings.dflash_enabled && !!this.modelSettings.dflash_draft_quant_enabled,
-                                dflash_draft_quant_weight_bits: this.modelSettings.dflash_enabled && this.modelSettings.dflash_draft_quant_enabled
-                                    ? parseInt(this.modelSettings.dflash_draft_quant_weight_bits)
-                                    : null,
-                                dflash_draft_quant_activation_bits: this.modelSettings.dflash_enabled && this.modelSettings.dflash_draft_quant_enabled
-                                    ? parseInt(this.modelSettings.dflash_draft_quant_activation_bits)
-                                    : null,
-                                dflash_draft_quant_group_size: this.modelSettings.dflash_enabled && this.modelSettings.dflash_draft_quant_enabled
-                                    ? parseInt(this.modelSettings.dflash_draft_quant_group_size)
-                                    : null,
-                                dflash_max_ctx: this.modelSettings.dflash_enabled && this.modelSettings.dflash_max_ctx
-                                    ? parseInt(this.modelSettings.dflash_max_ctx)
-                                    : null,
-                                dflash_in_memory_cache: this.modelSettings.dflash_enabled
-                                    ? !!this.modelSettings.dflash_in_memory_cache
-                                    : true,
-                                dflash_in_memory_cache_max_entries: this.modelSettings.dflash_enabled
-                                    ? (parseInt(this.modelSettings.dflash_in_memory_cache_max_entries) || 4)
-                                    : 4,
-                                dflash_in_memory_cache_max_bytes: this.modelSettings.dflash_enabled
-                                    ? Math.max(1, parseInt(this.modelSettings.dflash_in_memory_cache_max_gib) || 8) * (1024 ** 3)
-                                    : 8 * (1024 ** 3),
-                                dflash_ssd_cache: this.modelSettings.dflash_enabled
-                                    && !!this.modelSettings.dflash_in_memory_cache
-                                    && !!this.modelSettings.dflash_ssd_cache_available
-                                    && !!this.modelSettings.dflash_ssd_cache,
-                                dflash_ssd_cache_max_bytes: this.modelSettings.dflash_enabled
-                                    ? Math.max(1, parseInt(this.modelSettings.dflash_ssd_cache_max_gib) || 20) * (1024 ** 3)
-                                    : 20 * (1024 ** 3),
-                                // Long-context tuning. Empty → oMLX default.
-                                dflash_draft_window_size: this.modelSettings.dflash_enabled
-                                    && this.modelSettings.dflash_draft_window_size
-                                    ? parseInt(this.modelSettings.dflash_draft_window_size)
-                                    : null,
-                                dflash_draft_sink_size: this.modelSettings.dflash_enabled
-                                    && this.modelSettings.dflash_draft_sink_size !== null
-                                    && this.modelSettings.dflash_draft_sink_size !== undefined
-                                    && this.modelSettings.dflash_draft_sink_size !== ''
-                                    ? parseInt(this.modelSettings.dflash_draft_sink_size)
-                                    : 0,
-                                dflash_block_size: this.modelSettings.dflash_enabled
-                                    && this.modelSettings.dflash_block_size
-                                    ? parseInt(this.modelSettings.dflash_block_size)
-                                    : null,
-                                dflash_verify_mode: this.modelSettings.dflash_enabled
-                                    ? (this.modelSettings.dflash_verify_mode || 'adaptive')
-                                    : null,
-                                mtp_enabled: !!this.modelSettings.mtp_enabled,
-                                mtp_adaptive_max_depth: this.modelSettings.mtp_enabled
-                                    ? parseInt(this.modelSettings.mtp_adaptive_max_depth || '3')
-                                    : null,
-                                mtp_fixed_depth: null,
-                                qwen35_ane_prefill_shared_fraction: Number(this.modelSettings.qwen35_ane_prefill_shared_fraction),
-                                vlm_mtp_enabled: !!this.modelSettings.vlm_mtp_enabled,
-                                vlm_mtp_draft_model: this.modelSettings.vlm_mtp_enabled
-                                    ? (this.modelSettings.vlm_mtp_draft_model || null)
-                                    : null,
-                                vlm_mtp_draft_block_size: this.modelSettings.vlm_mtp_enabled
-                                    && this.modelSettings.vlm_mtp_draft_block_size
-                                    ? parseInt(this.modelSettings.vlm_mtp_draft_block_size)
-                                    : null,
-                                trust_remote_code: this.modelSettings.trust_remote_code,
-                                external_engine: this.modelSettings.external_engine || null,
-                            };
-                            if (isDiffusion) {
-                                Object.assign(payload, {
-                                    top_p: null,
-                                    top_k: null,
-                                    repetition_penalty: null,
-                                    min_p: null,
-                                    presence_penalty: null,
-                                    force_sampling: false,
-                                    reasoning_parser: null,
-                                    index_cache_freq: 0,
-                                    enable_thinking: null,
-                                    thinking_budget_enabled: false,
-                                    thinking_budget_tokens: 0,
-                                    guided_grammar_enabled: false,
-                                    guided_grammar: null,
-                                    max_tool_result_tokens: 0,
-                                    turboquant_kv_enabled: false,
-                                    turboquant_kv_bits: 4,
-                                    qwen35_ane_prefill_enabled: false,
-                                    qwen35_ane_prefill_sequence_length: 2048,
-                                    qwen35_ane_prefill_tail_padding_min_tokens: 0,
-                                    qwen35_ane_prefill_fraction: 0.53,
-                                    qwen35_ane_prefill_max_layers: 64,
-                                    qwen35_ane_prefill_dual_ane: true,
-                                    qwen35_ane_prefill_gdn: true,
-                                    qwen35_ane_prefill_gdn_fraction: 0.5,
-                                    qwen35_ane_prefill_gdn_max_layers: 48,
-                                    qwen35_ane_prefill_cpu_enabled: false,
-                                    qwen35_ane_prefill_cpu_fraction: 0.135,
-                                    qwen35_ane_prefill_cpu_down_fraction: 0,
-                                    qwen35_ane_prefill_cpu_gdn_fraction: 0,
-                                    qwen35_ane_prefill_cpu_threads: 8,
-                                    qwen35_ane_prefill_cpu_shared_resource: true,
-                                    specprefill_enabled: false,
-                                    specprefill_draft_model: null,
-                                    specprefill_keep_pct: null,
-                                    specprefill_threshold: null,
-                                    external_engine: null,
-                                    dflash_enabled: false,
-                                    dflash_draft_model: null,
-                                    dflash_draft_quant_enabled: false,
-                                    dflash_draft_quant_weight_bits: null,
-                                    dflash_draft_quant_activation_bits: null,
-                                    dflash_draft_quant_group_size: null,
-                                    dflash_max_ctx: null,
-                                    dflash_in_memory_cache: true,
-                                    dflash_in_memory_cache_max_entries: 4,
-                                    dflash_in_memory_cache_max_bytes: 8 * (1024 ** 3),
-                                    dflash_ssd_cache: false,
-                                    dflash_ssd_cache_max_bytes: 20 * (1024 ** 3),
-                                    dflash_draft_window_size: null,
-                                    dflash_draft_sink_size: null,
-                                    dflash_block_size: null,
-                                    dflash_verify_mode: null,
-                                    mtp_enabled: false,
-                                    mtp_adaptive_max_depth: null,
-                                    mtp_fixed_depth: null,
-                                    vlm_mtp_enabled: false,
-                                    vlm_mtp_draft_model: null,
-                                    vlm_mtp_draft_block_size: null,
-                                });
-                            }
-                            if (this.selectedModel?.embedding_audio_supported) {
-                                const audioSeconds = Number(this.modelSettings.embedding_audio_max_seconds);
-                                Object.assign(payload, {
-                                    embedding_audio_enabled: !!this.modelSettings.embedding_audio_enabled,
-                                    // Empty keeps the 30 s processor default.
-                                    embedding_audio_max_seconds: audioSeconds > 0 ? audioSeconds : null,
-                                });
-                            }
-                            return payload;
-                        })()),
+                        body: JSON.stringify(payload),
                     });
 
                     if (response.ok) {
@@ -3564,6 +3600,7 @@
                         this.modelSettings.max_tool_result_tokens = 0;
                         this.modelSettings.ctKwargEntries = [];
                         this.modelSettings.turboquant_kv_enabled = false;
+                        this.modelSettings.turboquant_kv_scheme = 'turboquant';
                         this.modelSettings.turboquant_kv_bits = 4;
                         this.modelSettings.qwen35_ane_prefill_enabled = false;
                         this.modelSettings.qwen35_ane_prefill_sequence_length = 2048;
@@ -3588,16 +3625,8 @@
                         this.modelSettings.dflash_draft_model = null;
                         this.modelSettings.dflash_draft_quant_enabled = false;
                         this.modelSettings.dflash_draft_quant_weight_bits = null;
-                        this.modelSettings.dflash_draft_quant_activation_bits = null;
                         this.modelSettings.dflash_draft_quant_group_size = null;
-                        this.modelSettings.dflash_max_ctx = null;
-                        this.modelSettings.dflash_in_memory_cache = true;
-                        this.modelSettings.dflash_in_memory_cache_max_entries = 4;
-                        this.modelSettings.dflash_in_memory_cache_max_gib = 8;
-                        this.modelSettings.dflash_ssd_cache = false;
-                        this.modelSettings.dflash_ssd_cache_max_gib = 20;
                         this.modelSettings.dflash_draft_window_size = null;
-                        this.modelSettings.dflash_draft_sink_size = 0;
                         this.modelSettings.dflash_block_size = null;
                         this.modelSettings.dflash_verify_mode = 'adaptive';
                         this.modelSettings.mtp_enabled = false;
@@ -3832,11 +3861,15 @@
                             claude_code_opus_model: this.globalSettings.claude_code.opus_model,
                             claude_code_sonnet_model: this.globalSettings.claude_code.sonnet_model,
                             claude_code_haiku_model: this.globalSettings.claude_code.haiku_model,
+                            claude_code_desktop_enabled: this.globalSettings.claude_code.desktop_enabled,
                         }),
                     });
                     if (!response.ok) {
                         console.error('Failed to save Claude Code settings');
                     }
+                    // The toggle writes/restores the Claude Desktop gateway
+                    // profile server-side; refresh the shown state.
+                    this.fetchClaudeDesktopStatus();
                 } catch (err) {
                     console.error('Failed to save Claude Code settings:', err);
                 }
@@ -3876,7 +3909,7 @@
                     return {
                         id,
                         label: window.t(tile.label),
-                        value: tile.unit === '%' ? raw.toFixed(1) : this.formatNumber(raw),
+                        value: tile.unit === '%' ? raw.toFixed(1) : this.formatServingCount(raw),
                         unit: tile.unit || '',
                     };
                 });
@@ -4131,6 +4164,71 @@
                 }
             },
 
+            async fetchClaudeDesktopStatus() {
+                try {
+                    const response = await fetch('/admin/api/claude-desktop/status');
+                    if (!response.ok) return;
+                    const data = await response.json();
+                    this.claudeDesktop.configured = !!data.configured;
+                } catch (err) {
+                    console.error('Failed to fetch Claude Desktop status:', err);
+                }
+            },
+
+            async reapplyClaudeDesktopConfig() {
+                this.claudeDesktop.working = true;
+                this.claudeDesktop.message = '';
+                try {
+                    const enabled = !!this.globalSettings.claude_code.desktop_enabled;
+                    const endpoint = enabled
+                        ? '/admin/api/claude-desktop/configure'
+                        : '/admin/api/claude-desktop/restore';
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({}),
+                    });
+                    if (!response.ok) {
+                        console.error('Failed to apply Claude Desktop configuration');
+                        return;
+                    }
+                    const data = await response.json();
+                    this.claudeDesktop.configured = !!data.configured;
+                } catch (err) {
+                    console.error('Failed to apply Claude Desktop configuration:', err);
+                } finally {
+                    this.claudeDesktop.working = false;
+                }
+            },
+
+            async restoreClaudeDesktopConfig() {
+                if (this.claudeDesktop.working) return;
+                this.claudeDesktop.working = true;
+                this.claudeDesktop.message = '';
+                try {
+                    const response = await fetch('/admin/api/claude-desktop/restore', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({}),
+                    });
+                    if (!response.ok) {
+                        this.claudeDesktop.message = window.t('status.claude_code.desktop_restore_error');
+                        return;
+                    }
+                    const data = await response.json();
+                    this.claudeDesktop.configured = !!data.configured;
+                    this.globalSettings.claude_code.desktop_enabled = false;
+                    await this.saveClaudeCodeSettings();
+                    this.claudeDesktop.configured = !!data.configured;
+                    this.claudeDesktop.message = window.t('status.claude_code.desktop_restore_success');
+                } catch (err) {
+                    console.error('Failed to restore Claude Desktop configuration:', err);
+                    this.claudeDesktop.message = window.t('status.claude_code.desktop_restore_error');
+                } finally {
+                    this.claudeDesktop.working = false;
+                }
+            },
+
             _launchCmd(tool) {
                 const raw = this.stats.cli_prefix || 'omlx';
                 const cli = raw === 'omlx' ? raw : this.shellQuote(raw);
@@ -4139,6 +4237,10 @@
 
             get claudeCommand() {
                 return this._launchCmd('claude');
+            },
+
+            get claudeDesktopCommand() {
+                return this._launchCmd('claude_desktop');
             },
 
             get codexCommand() {
@@ -4250,9 +4352,48 @@
                 return usable ? usable.id : '';
             },
 
+            isGgufModel() {
+                return this.modelSettings.model_format === 'gguf';
+            },
+
+            // A GGUF runs on an external engine even when its settings pick none.
+            effectiveExternalEngine() {
+                if (this.modelSettings.external_engine) return this.modelSettings.external_engine;
+                if (!this.isGgufModel()) return '';
+                return this.firstUsableExternalEngine() || this.modelSettings.external_engines?.[0]?.id || '';
+            },
+
+            externalEngineDraftRepo() {
+                const engines = this.modelSettings.external_engines || [];
+                const engine = engines.find(e => e.id === this.effectiveExternalEngine()) || engines[0];
+                return engine && !engine.compatible ? engine.draft_repo || '' : '';
+            },
+
+            async downloadEngineDraft() {
+                const repoId = this.externalEngineDraftRepo();
+                if (!repoId) return;
+                try {
+                    const response = await fetch('/admin/api/hf/download', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repo_id: repoId, hf_token: this.hfToken }),
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        alert(data.detail || window.t('js.error.start_download_failed'));
+                        return;
+                    }
+                    alert(window.t('js.success.download_started').replace('{repo_id}', repoId));
+                    await this.loadHFTasks();
+                    this.startHFRefresh();
+                } catch (err) {
+                    alert(window.t('js.error.hf_connect_failed'));
+                }
+            },
+
             externalEngineReason() {
                 const engines = this.modelSettings.external_engines || [];
-                const selected = engines.find(e => e.id === this.modelSettings.external_engine);
+                const selected = engines.find(e => e.id === this.effectiveExternalEngine());
                 if (selected) return selected.compatible ? '' : selected.reason;
                 return engines.some(e => e.compatible) ? '' : (engines[0]?.reason || '');
             },
@@ -4466,11 +4607,23 @@
             },
 
             formatNumber(num) {
-                const chinese = chineseCount(num);
-                if (chinese !== null) return chinese;
+                const compact = window.omlxCount?.eastAsian?.(num);
+                if (compact != null) return compact;
                 if (num >= 1000000000) return (num / 1000000000).toFixed(1) + 'B';
                 if (num >= 10000000) return (num / 1000000).toFixed(1) + 'M';
                 return num.toLocaleString();
+            },
+
+            setStatsNumberScale(value) {
+                this.statsNumberScale = value;
+                window.omlxCount?.setScale?.(value);
+            },
+
+            formatServingCount(value) {
+                if (this.statsNumberScale === 'exact') {
+                    return window.omlxCount.exact(value);
+                }
+                return this.formatNumber(value);
             },
 
             cacheObsCumulative(stats, selectedModel) {
@@ -4518,36 +4671,11 @@
             },
 
             formatTokenCount(n) {
-                const chinese = chineseCount(n);
-                if (chinese !== null) return chinese;
+                const compact = window.omlxCount?.eastAsian?.(n);
+                if (compact != null) return compact;
                 if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
                 if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
                 return String(n);
-            },
-
-            formatDFlashSessionStats(totals) {
-                if (!totals || totals.requests <= 1) return '';
-
-                const parts = [];
-                if (totals.speculative_requests > 0) {
-                    parts.push(
-                        Math.round((totals.acceptance_ratio || 0) * 100) + '% ' +
-                        window.t('status.active_models.dflash_draft_share'),
-                        (totals.accepted_draft_tokens_per_cycle || 0).toFixed(2) + ' ' +
-                        window.t('status.active_models.dflash_accepted_draft_per_cycle'),
-                        (totals.tokens_per_cycle || 0).toFixed(2) + ' ' +
-                        window.t('status.active_models.dflash_output_per_cycle'),
-                        totals.speculative_requests + ' ' +
-                        window.t('status.active_models.dflash_speculative_requests'),
-                    );
-                }
-                if (totals.fallback_requests > 0) {
-                    parts.push(
-                        totals.fallback_requests + ' ' +
-                        window.t('status.active_models.dflash_fallback_requests'),
-                    );
-                }
-                return window.t('status.active_models.dflash_session') + ': ' + parts.join(' · ');
             },
 
             formatDurationShort(seconds) {
@@ -4703,6 +4831,11 @@
                 } else {
                     this._copyFallback(text);
                 }
+            },
+
+            // Name clients send for a model: its alias when set, as /v1/models lists it.
+            apiModelName(id) {
+                return this.managerModelInfo(id)?.settings?.model_alias || id;
             },
 
             _copyFallback(text) {
@@ -6453,8 +6586,7 @@
             // the user clicks rapidly.
             wiredLimitCopied: false,
 
-            copyWiredLimitCommand() {
-                const text = this.memoryGuardWiredLimitCommand;
+            copyWiredLimitCommand(text = this.memoryGuardWiredLimitCommand) {
                 if (!text) return;
                 const onSuccess = () => {
                     this.wiredLimitCopied = true;
@@ -6910,8 +7042,44 @@
             // HuggingFace Downloader Functions
             // =================================================================
 
-            async startHFDownload() {
-                const repoId = this.hfRepoId.trim();
+            // Convert Hugging Face and configured mirror model URLs to owner/repo ids.
+            // Leave plain repository IDs and other input unchanged for model lookup.
+            hfRepoIdFromInput(value) {
+                const raw = String(value ?? '').trim();
+                const officialLink = /^(?:(?:https?:)?\/\/)?(?:www\.)?(?:huggingface\.co|hf\.co)\/([^/?#\s]+\/[^/?#\s]+)/i;
+                const officialMatch = raw.match(officialLink);
+                if (officialMatch) return officialMatch[1];
+
+                const endpoint = String(this.globalSettings?.huggingface?.endpoint ?? '').trim();
+                if (endpoint) {
+                    try {
+                        const mirror = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(endpoint)
+                            ? endpoint : `https://${endpoint}`);
+                        const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const prefix = mirror.pathname.split('/').filter(Boolean).map(escape).join('/');
+                        const pathPrefix = prefix ? `(?:${prefix}/)?` : '';
+                        const mirrorLink = new RegExp(
+                            `^(?:(?:https?:)?//)?(?:www\\.)?${escape(mirror.host)}/${pathPrefix}([^/?#\\s]+/[^/?#\\s]+)`,
+                            'i',
+                        );
+                        const mirrorMatch = raw.match(mirrorLink);
+                        if (mirrorMatch) return mirrorMatch[1];
+                    } catch {
+                        // Ignore invalid mirror settings and keep the official hosts.
+                    }
+                }
+                return raw;
+            },
+
+            startHFDownload() {
+                const repoId = this.hfRepoIdFromInput(this.hfRepoId);
+                if (!repoId) return;
+                this.hfRepoId = repoId;
+                this.openModelDetail(repoId, 'files');
+            },
+
+            async submitHFDownload(files) {
+                const repoId = this.hfModelDetail?.repo_id;
                 if (!repoId) return;
 
                 this.hfError = '';
@@ -6927,13 +7095,15 @@
                         body: JSON.stringify({
                             repo_id: repoId,
                             hf_token: this.hfToken,
+                            files,
                         }),
                         signal: controller.signal,
                     });
 
                     if (response.ok) {
                         this.hfSuccess = window.t('js.success.download_started').replace('{repo_id}', repoId);
-                        this.hfRepoId = '';
+                        if (this.hfRepoId.trim().toLowerCase() === repoId.toLowerCase()) this.hfRepoId = '';
+                        this.closeModelDetail();
                         await this.loadHFTasks();
                         this.startHFRefresh();
                         setTimeout(() => { this.hfSuccess = ''; }, 5000);
@@ -7083,8 +7253,18 @@
                 const pct = Math.round(task.progress || 0);
                 const dlGB = (task.downloaded_size / (1024 ** 3)).toFixed(1);
                 const totalGB = (task.total_size / (1024 ** 3)).toFixed(1);
-                const base = `${pct}% \u00b7 ${dlGB} GB / ${totalGB} GB`;
-                return `${base} \u00b7 ${this.formatSpeed(task)}`;
+                const base = `${pct}% \u00b7 ${dlGB} GB / ${totalGB} GB \u00b7 ${this.formatSpeed(task)}`;
+                const eta = this.formatEta(task.eta_seconds);
+                return eta ? `${base} \u00b7 ${eta}` : base;
+            },
+
+            formatEta(seconds) {
+                if (seconds == null) return '';
+                const h = Math.floor(seconds / 3600);
+                const m = Math.floor((seconds % 3600) / 60);
+                const s = seconds % 60;
+                const time = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+                return window.t('models.queue.eta').replace('{time}', time);
             },
 
             formatSpeed(task) {
@@ -7134,6 +7314,7 @@
                         preserve_mtp: this.oqSelectedModelHasMtp() ? this.oqPreserveMtp : false,
                         mtp_assistant_model_path: this.oqMtpAssistantCandidates().some(m => m.path === this.oqMtpAssistantPath)
                             ? this.oqMtpAssistantPath : '',
+                        preserve_ngram_table: this.oqPreservesNgram(),
                     };
                     if (this.oqEnhanced) {
                         payload.enhanced = true;
@@ -7281,6 +7462,10 @@
                 return model?.model_type || '';
             },
 
+            oqPreservesNgram() {
+                return this.oqSelectedModelType() === 'deepseek_v41' && this.oqPreserveNgram;
+            },
+
             oqAvailableLevels() {
                 return this.oqSelectedModelType() === 'deepseek_v41'
                     ? [2, 2.5, 2.7, 3, 4] : [2, 2.5, 2.7, 3, 3.5, 4, 5, 6, 8];
@@ -7352,6 +7537,7 @@
                             model_path: this.oqSelectedModelPath,
                             oq_level: this.oqLevel,
                             preserve_mtp: this.oqSelectedModelHasMtp() && this.oqPreserveMtp ? 'true' : 'false',
+                            preserve_ngram_table: this.oqPreservesNgram() ? 'true' : 'false',
                         });
                         const resp = await fetch(`/admin/api/oq/estimate?${params}`);
                         if (resp.ok) {
@@ -7524,7 +7710,7 @@
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 15000);
                 try {
-                    const response = await fetch(`/admin/api/hf/recommended?mlx_only=${this.hfMlxOnly}`, { signal: controller.signal });
+                    const response = await fetch(`/admin/api/hf/recommended?model_format=${this.hfModelFormat}`, { signal: controller.signal });
                     if (response.ok) {
                         const data = await response.json();
                         this.hfTokenInvalid = !!data.hf_token_invalid;
@@ -7560,9 +7746,32 @@
                 }
             },
 
+            // A GGUF model file: at the repo root or split in its VARIANT/ folder.
+            isGgufModelFile(name) {
+                const lower = name.toLowerCase();
+                if (!lower.endsWith('.gguf') || lower.includes('mmproj')) return false;
+                const [folder, base, ...rest] = lower.split('/');
+                if (base === undefined) return true;
+                const split = base.match(/^(.+)-\d{5}-of-\d{5}\.gguf$/);
+                return !rest.length && !folder.startsWith('.') && !!split
+                    && split[1].endsWith(`-${folder}`);
+            },
+
+            // The GGUF model files a task fetches, shown beside its repo.
+            taskGgufFiles(task) {
+                return (task.files || []).filter(name => this.isGgufModelFile(name)).join(', ');
+            },
+
+            // The model ID a finished download serves under: a GGUF's file name.
+            taskModelId(task) {
+                const name = (task.files || []).find(f => this.isGgufModelFile(f));
+                if (!name) return task.repo_id.split('/').pop();
+                return name.split('/').pop().replace(/(-\d{5}-of-\d{5})?\.gguf$/i, '');
+            },
+
+            // Every download picks its files in the detail modal first.
             downloadRecommended(repoId) {
-                this.hfRepoId = repoId;
-                this.startHFDownload();
+                this.openModelDetail(repoId, 'files');
             },
 
             isModelDownloaded(repoId) {
@@ -7577,6 +7786,256 @@
                 return !unfinished && this.hfModels.some(matches);
             },
 
+            // =================================================================
+            // First-run banner
+            // =================================================================
+
+            get hasUserModels() {
+                return this.models.some(m => !m.virtual && !m.is_helper);
+            },
+
+            get onboardingTask() {
+                return this.hfTasks.find(t => t.status === 'pending' || t.status === 'downloading') || null;
+            },
+
+            get onboardingState() {
+                if (!this.onboardingStartedEmpty) return null;
+                if (this.onboardingTask) return 'downloading';
+                if (this.hasUserModels) return this.onboardingReadyDismissed ? null : 'ready';
+                return this.onboardingDismissed ? null : 'first';
+            },
+
+            get onboardingReadyName() {
+                const model = this.models.find(m => !m.virtual && !m.is_helper);
+                return model ? (model.display_name || model.id) : '';
+            },
+
+            // =================================================================
+            // Recommended models (hardware-aware oQ picks)
+            // =================================================================
+
+            async loadRecommendations(force = false) {
+                if (this.recommendationsLoading || (this.recommendations && !force)) return;
+                this.recommendationsLoading = true;
+                this.recommendationsError = '';
+                try {
+                    const response = await fetch('/admin/api/hf/recommendations');
+                    if (response.ok) {
+                        this.recommendations = await response.json();
+                    } else if (response.status === 401) {
+                        window.location.href = '/admin';
+                    } else {
+                        const data = await response.json().catch(() => ({}));
+                        this.recommendationsError = data.detail || window.t('models.recommend.error');
+                    }
+                } catch (err) {
+                    this.recommendationsError = window.t('models.recommend.error');
+                    console.error('Failed to load recommendations:', err);
+                } finally {
+                    this.recommendationsLoading = false;
+                }
+            },
+
+            recGB(bytes) {
+                const gb = (bytes || 0) / 1024 ** 3;
+                return (gb >= 100 ? Math.round(gb) : gb.toFixed(1)) + ' GB';
+            },
+
+            recContext(tokens) {
+                if (tokens >= 1024 * 1024) return Math.round(tokens / (1024 * 1024)) + 'M';
+                return Math.round(tokens / 1024) + 'K';
+            },
+
+            recParams(count) {
+                const b = count / 1e9;
+                return (b >= 10 ? Math.round(b) : b.toFixed(1)) + 'B';
+            },
+
+            recArch(item) {
+                if (!item.moe) {
+                    return window.t('models.recommend.arch.dense').replace('{total}', this.recParams(item.total_params));
+                }
+                return window.t('models.recommend.arch.moe')
+                    .replace('{total}', this.recParams(item.total_params))
+                    .replace('{active}', this.recParams(item.active_params));
+            },
+
+            recDownloadsText(item) {
+                return window.t('models.recommend.meta.downloads').replace('{count}', this.formatDownloads(item.downloads));
+            },
+
+            recDots(level) {
+                return [1, 2, 3, 4, 5].map(i => (i <= level ? 'full' : (i - 0.5 === level ? 'half' : 'empty')));
+            },
+
+            // Share of the budget a row's weights take. Unlock rows use the raised budget.
+            recMemoryShare(item) {
+                const scenarios = this.recommendations.memory.scenarios;
+                const usable = (item.kind ? scenarios.both : scenarios.now).usable_bytes;
+                return usable > 0 ? Math.min(100, Math.round(item.resident_bytes / usable * 100)) : 100;
+            },
+
+            // Roomy, getting full, tight.
+            recMemoryBarClass(item) {
+                const share = this.recMemoryShare(item);
+                if (share >= 85) return 'bg-red-400';
+                if (share >= 60) return 'bg-orange-300';
+                return 'bg-emerald-400';
+            },
+
+            recSpeedVs(item) {
+                const ratio = item.relative_speed;
+                const fmt = r => (r >= 10 ? r.toFixed(0) : r.toFixed(1));
+                if (ratio > 1.1) {
+                    return window.t('models.recommend.relative.faster')
+                        .replace('{ratio}', fmt(ratio)).replace('{name}', item.base_name);
+                }
+                if (ratio < 0.9) {
+                    return window.t('models.recommend.relative.slower')
+                        .replace('{ratio}', fmt(1 / ratio)).replace('{name}', item.base_name);
+                }
+                return window.t('models.recommend.relative.similar').replace('{name}', item.base_name);
+            },
+
+            recNote(group, item) {
+                if (group === 'bigger') {
+                    return window.t('models.recommend.note.bigger')
+                        .replace('{total}', this.recParams(item.total_params)).replace('{speed}', this.recSpeedVs(item));
+                }
+                if (group === 'precise') {
+                    return window.t('models.recommend.note.precise').replace('{speed}', this.recSpeedVs(item));
+                }
+                if (group === 'faster') {
+                    return window.t('models.recommend.note.faster').replace('{speed}', this.recSpeedVs(item));
+                }
+                if (item.kind === 'table_in_memory') {
+                    return window.t('models.recommend.note.table_in_memory').replace('{speed}', this.recSpeedVs(item));
+                }
+                const best = this.recommendations.sections.best;
+                const smartest = Math.max(...best.map(b => b.smarts), -Infinity);
+                return window.t(item.smarts > smartest
+                    ? 'models.recommend.note.smarter_than_best'
+                    : 'models.recommend.note.larger_build');
+            },
+
+            recBiggerEmptyText() {
+                const best = this.recommendations.sections.best;
+                const smartest = Math.max(...best.map(b => b.smarts), -Infinity);
+                const names = this.recommendations.sections.unlock
+                    .filter(u => u.kind === 'fits' && u.smarts > smartest && !best.some(b => b.name === u.name))
+                    .map(u => `${u.name} oQ${u.level}e`);
+                if (!names.length) return window.t('models.recommend.bigger.empty');
+                return window.t('models.recommend.bigger.empty_unlock').replace('{models}', names.join(', '));
+            },
+
+            recTask(repoId) {
+                const wanted = repoId.toLowerCase();
+                return this.hfTasks.findLast(t => t.repo_id?.toLowerCase() === wanted);
+            },
+
+            recState(repoId) {
+                const task = this.recTask(repoId);
+                if (task && (task.status === 'pending' || task.status === 'downloading')) return 'downloading';
+                return this.isModelDownloaded(repoId) ? 'downloaded' : 'idle';
+            },
+
+            recDiskShort(item) {
+                const free = this.recommendations?.disk?.free_bytes || 0;
+                return free > 0 && item.download_bytes > free;
+            },
+
+            recChipLine() {
+                const device = this.recommendations.device;
+                if (!device.gpu_cores) return device.chip;
+                return device.chip + ' · ' + window.t('models.recommend.gpu_cores').replace('{cores}', device.gpu_cores);
+            },
+
+            recMemoryLine() {
+                return window.t('models.recommend.memory_line')
+                    .replace('{memory}', this.recGB(this.recommendations.memory.total_bytes))
+                    .replace('{bandwidth}', this.recommendations.device.bandwidth_gbps);
+            },
+
+            recGpuLimitText() {
+                const memory = this.recommendations.memory;
+                const key = memory.wired_limit_set ? 'models.recommend.chip.gpu_limit_set' : 'models.recommend.chip.gpu_limit_default';
+                return window.t(key).replace('{size}', this.recGB(memory.scenarios.now.metal_cap_bytes));
+            },
+
+            // Total RAM split into what models get and what holds them back.
+            recMemorySegments() {
+                const memory = this.recommendations.memory;
+                const now = memory.scenarios.now;
+                return [
+                    { key: 'usable', bytes: now.usable_bytes, cls: 'bg-emerald-500', label: 'models.recommend.bar.usable' },
+                    { key: 'headroom', bytes: now.ceiling_bytes - now.usable_bytes, cls: 'bg-emerald-500/30', label: 'models.recommend.bar.headroom' },
+                    { key: 'gpu', bytes: memory.static_ceiling_bytes - now.ceiling_bytes, cls: 'bg-amber-500/40', label: 'models.recommend.bar.gpu_limit' },
+                    // A custom memory guard ceiling below what the tier reserve allows.
+                    { key: 'custom', bytes: memory.total_bytes - memory.reserve_bytes - memory.static_ceiling_bytes, cls: 'bg-neutral-200', label: 'models.recommend.bar.custom_limit' },
+                    { key: 'reserve', bytes: memory.reserve_bytes, cls: 'bg-neutral-300', label: 'models.recommend.bar.reserve' },
+                ]
+                    .filter(segment => segment.bytes > 64 * 1024 ** 2)
+                    .map(segment => ({ ...segment, percent: segment.bytes / memory.total_bytes * 100 }));
+            },
+
+            recUnlockOpen() {
+                if (this.recommendationsUnlockOpen !== null) return this.recommendationsUnlockOpen;
+                return (this.recommendations?.memory?.total_bytes || 0) > 16 * 1024 ** 3;
+            },
+
+            recUnlockGain(key) {
+                const scenarios = this.recommendations.memory.scenarios;
+                const gain = scenarios[key].usable_bytes - scenarios.now.usable_bytes;
+                return gain > 256 * 1024 ** 2 ? gain : 0;
+            },
+
+            recAggressiveReserve() {
+                return this.recommendations.memory.aggressive_reserve_bytes;
+            },
+
+            recMetalPercent() {
+                const memory = this.recommendations.memory;
+                return Math.round(memory.scenarios.now.metal_cap_bytes / memory.total_bytes * 100);
+            },
+
+            recWiredCommand() {
+                const memory = this.recommendations.memory;
+                const mb = memory.suggested_wired_limit_mb;
+                if (!memory.guard_enabled || mb * 1024 ** 2 <= memory.scenarios.now.metal_cap_bytes) return '';
+                return `sudo sysctl iogpu.wired_limit_mb=${mb}`;
+            },
+
+            recUnlockSummary() {
+                const memory = this.recommendations.memory;
+                const both = memory.scenarios.both;
+                return window.t('models.recommend.unlock.summary')
+                    .replace('{usable}', this.recGB(both.usable_bytes))
+                    .replace('{now}', this.recGB(memory.scenarios.now.usable_bytes))
+                    .replace('{free}', this.recGB(memory.total_bytes - both.ceiling_bytes));
+            },
+
+            async recSetAggressive() {
+                this.recommendationsApplying = true;
+                try {
+                    const response = await fetch('/admin/api/global-settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ memory_guard_tier: 'aggressive' }),
+                    });
+                    if (response.ok) {
+                        this.globalSettings.memory.memory_guard_tier = 'aggressive';
+                        await this.loadRecommendations(true);
+                    } else {
+                        const data = await response.json().catch(() => ({}));
+                        this.hfError = data.detail || window.t('models.recommend.error');
+                    }
+                } catch (err) {
+                    console.error('Failed to switch the memory guard tier:', err);
+                } finally {
+                    this.recommendationsApplying = false;
+                }
+            },
+
             getMemoryFitStatus(sizeBytes) {
                 const totalBytes = this.globalSettings.system?.total_memory_bytes || 0;
                 if (!totalBytes || !sizeBytes) return 'safe';
@@ -7587,8 +8046,8 @@
             },
 
             formatDownloads(count) {
-                const chinese = chineseCount(count);
-                if (chinese !== null) return chinese;
+                const compact = window.omlxCount?.eastAsian?.(count);
+                if (compact != null) return compact;
                 if (count >= 1000000) return (count / 1000000).toFixed(1) + 'M';
                 if (count >= 1000) return (count / 1000).toFixed(1) + 'K';
                 return count.toString();
@@ -7686,7 +8145,7 @@
                         q: this.hfSearchQuery,
                         sort: this.hfSearchSort,
                         limit: '100',
-                        mlx_only: this.hfMlxOnly,
+                        model_format: this.hfModelFormat,
                     });
                     // Add filter parameters if set. Sizes use binary GiB to match
                     // _format_model_size on the backend.
@@ -7781,30 +8240,40 @@
             },
 
             // Model detail modal
-            async openModelDetail(repoId) {
+            async openModelDetail(repoId, tab = 'card') {
                 this.hfModelDetailLoading = true;
                 this.hfModelDetail = null;
+                this.hfDetailTab = tab;
+                this.hfSelectedFiles = {};
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 15000);
+                // A download still starts when the file list does not load.
+                const unavailable = (message) => {
+                    if (tab !== 'files') {
+                        this.hfError = message;
+                        setTimeout(() => { this.hfError = ''; }, 5000);
+                        return;
+                    }
+                    this.hfModelDetail = { repo_id: repoId, files: [], tags: [], layout: 'other',
+                                           downloads: 0, likes: 0, download_all_size: 0,
+                                           unavailable: message };
+                };
                 try {
                     const params = new URLSearchParams({ repo_id: repoId });
-                    const response = await fetch(`/admin/api/hf/model-info?${params}`, { signal: controller.signal });
+                    const headers = this.hfToken ? { 'X-HF-Token': this.hfToken } : {};
+                    const response = await fetch(`/admin/api/hf/model-info?${params}`, { headers, signal: controller.signal });
                     if (response.ok) {
                         this.hfModelDetail = await response.json();
+                        this.resetHfSelection();
                     } else if (response.status === 401) {
                         window.location.href = '/admin';
                     } else {
                         const data = await response.json().catch(() => ({}));
-                        this.hfError = data.detail || window.t('js.error.fetch_model_info_failed');
-                        setTimeout(() => { this.hfError = ''; }, 5000);
+                        unavailable(data.detail || window.t('js.error.fetch_model_info_failed'));
                     }
                 } catch (err) {
-                    if (err.name === 'AbortError') {
-                        this.hfError = window.t('js.error.hf_timeout');
-                    } else {
-                        this.hfError = window.t('js.error.hf_connect_failed');
-                    }
-                    setTimeout(() => { this.hfError = ''; }, 5000);
+                    unavailable(err.name === 'AbortError'
+                        ? window.t('js.error.hf_timeout') : window.t('js.error.hf_connect_failed'));
                     console.error('Failed to fetch model info:', err);
                 } finally {
                     clearTimeout(timeoutId);
@@ -7817,6 +8286,73 @@
                 this.hfModelDetailLoading = false;
                 this.msModelDetail = null;
                 this.msModelDetailLoading = false;
+            },
+
+            // A selection starts from what "download all" fetches; GGUF repos start empty.
+            resetHfSelection() {
+                const picked = {};
+                for (const file of this.hfModelDetail?.files || []) {
+                    if (file.preselected && !file.local) picked[file.name] = true;
+                }
+                this.hfSelectedFiles = picked;
+            },
+
+            isHfFileLocked(file) {
+                return file.required || file.local;
+            },
+
+            isHfFileSelected(file) {
+                return !file.local && (file.required || !!this.hfSelectedFiles[file.name]);
+            },
+
+            // A split GGUF's parts toggle together; a GGUF brings its vision projector.
+            toggleHfFile(file) {
+                if (this.isHfFileLocked(file)) return;
+                const files = this.hfModelDetail.files;
+                const on = !this.hfSelectedFiles[file.name];
+                const picked = { ...this.hfSelectedFiles };
+                const members = file.group ? files.filter(f => f.group === file.group) : [file];
+                for (const member of members) {
+                    if (!member.local) picked[member.name] = on;
+                }
+                const projector = on && file.mmproj && files.find(f => f.name === file.mmproj);
+                if (projector && !projector.local) picked[projector.name] = true;
+                this.hfSelectedFiles = picked;
+            },
+
+            hfSelectedNames() {
+                return (this.hfModelDetail?.files || [])
+                    .filter(file => this.isHfFileSelected(file))
+                    .map(file => file.name);
+            },
+
+            hfSelectionSize() {
+                return (this.hfModelDetail?.files || [])
+                    .filter(file => this.isHfFileSelected(file))
+                    .reduce((total, file) => total + (file.size || 0), 0);
+            },
+
+            // A split GGUF loads as one model: size the whole set.
+            hfFileSize(file) {
+                if (!file.group) return file.size || 0;
+                return this.hfModelDetail.files
+                    .filter(f => f.group === file.group)
+                    .reduce((total, f) => total + (f.size || 0), 0);
+            },
+
+            // What "download all" still has to fetch: its files not downloaded yet.
+            hfDownloadAllSize() {
+                const detail = this.hfModelDetail;
+                if (!detail?.files?.length) return detail?.download_all_size || 0;
+                const fetched = detail.layout === 'safetensors' ? (f => f.preselected) : (() => true);
+                return detail.files
+                    .filter(f => fetched(f) && !f.local)
+                    .reduce((total, f) => total + (f.size || 0), 0);
+            },
+
+            hfFitsDisk(bytes) {
+                const free = this.hfModelDetail?.disk_free;
+                return !free || bytes <= free;
             },
 
             formatFileSize(bytes) {

@@ -1,0 +1,31 @@
+diff --git a/omlx/models/clef.py b/omlx/models/clef.py
+index 9e0cc59..ec2cd9c 100644
+--- a/omlx/models/clef.py
++++ b/omlx/models/clef.py
+@@ -42,6 +42,13 @@ NOUL_DEFAULT_CRITERIA = {
+ MAX_LENGTH = 16384
+ 
+ 
++# Clef checkpoints ride a Qwen3.5 backbone whose own window is far larger
++# (262144 on the release); 16384 is the joint head's evaluated window, not
++# the model's, so serve the backbone's window when the checkpoint states it.
++def _context_limit(backbone: DecisionBackbone) -> int:
++    return backbone.max_position_embeddings or MAX_LENGTH
++
++
+ def render(value: Any) -> str:
+     if isinstance(value, str):
+         return value
+@@ -398,7 +405,11 @@ class ClefModel:
+             image_tokens = backbone.tokenize(text + "\n")
+ 
+         ids, fields = encode_record(
+-            backbone.tokenize, request, image_tokens, truncate=truncate
++            backbone.tokenize,
++            request,
++            image_tokens,
++            max_length=_context_limit(backbone),
++            truncate=truncate,
+         )
+         return ClefPlan(
+             input_ids=np.asarray(ids, dtype=np.int32),

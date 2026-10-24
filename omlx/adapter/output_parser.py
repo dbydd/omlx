@@ -412,6 +412,7 @@ def install_minimax_m3_tokenizer_protocol(
 
     from ..patches.mlx_vlm_minimax_m3_compat import (
         apply_mlx_vlm_minimax_m3_compat_patch,
+        minimax_thinking_mode_template,
     )
 
     apply_mlx_vlm_minimax_m3_compat_patch()
@@ -466,6 +467,11 @@ def install_minimax_m3_tokenizer_protocol(
     for name in ("has_tool_calling", "has_thinking"):
         with suppress(AttributeError, TypeError):
             setattr(tokenizer, name, True)
+    # mlx_lm's TokenizerWrapper forwards this to the tokenizer it renders with.
+    with suppress(AttributeError, TypeError):
+        tokenizer.chat_template = minimax_thinking_mode_template(
+            getattr(tokenizer, "chat_template", None)
+        )
     return True
 
 
@@ -828,11 +834,12 @@ def _is_muse_glimmer_model(
     model_name: str,
     model_config: dict[str, Any] | None = None,
 ) -> bool:
+    # Muse Spark speaks the same channel protocol as Muse Glimmer.
     model_type = model_config.get("model_type") if model_config else None
-    if model_type == "muse_glimmer":
+    if model_type in ("muse_glimmer", "muse_spark"):
         return True
     lowered = model_name.lower()
-    return "muse" in lowered and "glimmer" in lowered
+    return "muse" in lowered and ("glimmer" in lowered or "spark" in lowered)
 
 
 def _append_missing_json_object_closers(payload: str) -> str | None:

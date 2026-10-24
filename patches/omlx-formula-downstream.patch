@@ -1,19 +1,25 @@
 diff --git a/Formula/omlx.rb b/Formula/omlx.rb
-index fb4e8d9d..57a0c08f 100644
+index c4c90fe..d84fb2a 100644
 --- a/Formula/omlx.rb
 +++ b/Formula/omlx.rb
-@@ -3,15 +3,23 @@ class Omlx < Formula
- 
+@@ -1,15 +1,29 @@
+ class Omlx < Formula
    desc "LLM inference server optimized for Apple Silicon"
    homepage "https://github.com/jundot/omlx"
--  url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.0.tar.gz"
--  sha256 "cd58f72b7390896d8484ae0056cb8f578e21b18b448a5199caa023118a215c83"
-+  url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.1.dev1.tar.gz"
-+  sha256 "cd83e8ecfaecb95407c3e48c793f639454b9bcddf002235fa0b1a2e4c05528a6"
+-  url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.2.tar.gz"
+-  sha256 "9883becd3d1b42f1e55028a6cb792b9d607a12ef2fa947518c87ee3caef121d6"
++  url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.3.dev1.tar.gz"
++  sha256 "93cad6982531b8d1b426a453fbef9dc869878d1e6c084f5a2b4537e7f5c685ed"
++  version "0.7.3.dev1"
++  revision 1
    license "Apache-2.0"
 +  patch do
 +    url "https://raw.githubusercontent.com/dbydd/omlx/main/patches/power-states.patch"
-+    sha256 "709da76ac55ce96e7c626558272a3dfcd0d7a104348a5f6d8ad1a3f55bb77837"
++    sha256 "0288564d354401db04b895803d161a409a4ff5a4ca062c0db00deac95c55c25e"
++  end
++  patch do
++    url "https://raw.githubusercontent.com/dbydd/omlx/main/patches/clef-context-window.patch"
++    sha256 "8263f2cfd364509e3897c29df5f020fdb057ad344573104013399f4ce764cd6f"
 +  end
  
    head "https://github.com/jundot/omlx.git", branch: "main"
@@ -28,7 +34,7 @@ index fb4e8d9d..57a0c08f 100644
  
    depends_on "rust" => :build
    depends_on arch: :arm64
-@@ -114,8 +122,11 @@ class Omlx < Formula
+@@ -122,8 +136,11 @@ class Omlx < Formula
        ENV.append "CMAKE_ARGS", "-DPython_EXECUTABLE=#{libexec}/bin/python"
      end
  

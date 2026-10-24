@@ -6,6 +6,7 @@ import copy
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pydantic
 import pytest
 from fastapi import HTTPException
 
@@ -180,6 +181,54 @@ async def test_sampling_setting_change_keeps_cached_failure():
     assert entry.load_failed is True
     assert entry.load_failure_message == "trust_remote_code=True required"
     assert entry.load_failure_at == 123.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_kv_format_change_reloads_only_when_compression_is_enabled(enabled):
+    pool, entry = _failed_pool()
+    entry.engine = _idle_engine()
+    entry.load_failed = False
+    pool._unload_engine = AsyncMock()
+
+    result = await _update_settings(
+        pool,
+        ModelSettings(turboquant_kv_enabled=enabled),
+        admin_routes.ModelSettingsRequest(turboquant_kv_scheme="affine4"),
+    )
+
+    assert result["settings"]["turboquant_kv_scheme"] == "affine4"
+    assert result["requires_reload"] is enabled
+    assert result["auto_unloaded"] is enabled
+    assert result["reload_deferred"] is False
+    assert pool._unload_engine.await_count == int(enabled)
+
+
+@pytest.mark.asyncio
+async def test_legacy_turboquant_bits_only_block_kv_changes():
+    pool, _ = _failed_pool()
+    legacy = ModelSettings(turboquant_kv_bits=5)
+
+    result = await _update_settings(
+        pool, legacy, admin_routes.ModelSettingsRequest(temperature=0.5)
+    )
+    assert result["settings"]["temperature"] == 0.5
+
+    manager = MagicMock()
+    manager.get_settings.return_value = ModelSettings(turboquant_kv_bits=5)
+    with (
+        patch("omlx.admin.routes._get_engine_pool", return_value=pool),
+        patch("omlx.admin.routes._get_settings_manager", return_value=manager),
+        patch("omlx.admin.routes._get_server_state", return_value=MagicMock()),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await admin_routes.update_model_settings(
+            "ling",
+            admin_routes.ModelSettingsRequest(turboquant_kv_scheme="affine8"),
+            is_admin=True,
+        )
+    assert exc.value.status_code == 400
+    manager.set_settings.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -431,6 +480,16 @@ def test_oq_a8_model_supported(config_type, expected):
     assert admin_routes._oq_a8_model_supported(config_type) is expected
 
 
+@pytest.mark.parametrize(
+    "config_type,kernels,expected",
+    [("qwen3_5", True, True), ("qwen3_5", False, False), ("llama", True, False)],
+)
+def test_model_options_report_oq_a8_support(config_type, kernels, expected):
+    with patch.object(admin_routes, "_oq_a8_kernels_available", return_value=kernels):
+        options = admin_routes._model_options({"config_model_type": config_type}, None)
+    assert options["qwen35_oq_a8_supported"] is expected
+
+
 @pytest.mark.asyncio
 async def test_oq_a8_needs_native_int8_kernels():
     """Nothing on this hardware would run faster, so the setting is refused
@@ -479,6 +538,24 @@ async def test_qwen4_ple_ssd_offload_is_ignored_for_other_models():
     )
 
     assert settings.qwen4_ple_ssd_offload is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_type", "expected"), [("qwen4_exp", True), ("qwen3_5_moe", False)]
+)
+async def test_qwen4_wide_decode_is_persisted_for_qwen4_only(model_type, expected):
+    pool, entry = _failed_pool()
+    entry.config_model_type = model_type
+    settings = ModelSettings()
+
+    await _update_settings(
+        pool,
+        settings,
+        admin_routes.ModelSettingsRequest(qwen4_gdn_decode_wide_proj=True),
+    )
+
+    assert settings.qwen4_gdn_decode_wide_proj is expected
 
 
 @pytest.mark.asyncio
@@ -700,6 +777,15 @@ async def test_mtp_depth_rejects_out_of_range_values(field, value):
         )
 
 
+@pytest.mark.parametrize("value", [0, -5])
+def test_output_token_caps_below_one_are_rejected(value):
+    # The global route applies the runtime copy before validate().
+    with pytest.raises(pydantic.ValidationError, match="max_tokens"):
+        admin_routes.ModelSettingsRequest(max_tokens=value)
+    with pytest.raises(pydantic.ValidationError, match="sampling_max_tokens"):
+        admin_routes.GlobalSettingsRequest(sampling_max_tokens=value)
+
+
 def test_unknown_settings_fields_are_rejected_loudly():
     """Unknown keys must 422 instead of silently returning success:true."""
     import pydantic
@@ -815,7 +901,7 @@ async def test_enabling_dflash_over_a_deleted_draft_path_is_rejected(tmp_path):
         patch("omlx.admin.routes._get_engine_pool", return_value=pool),
         patch("omlx.admin.routes._get_settings_manager", return_value=manager),
         patch("omlx.admin.routes._get_server_state", return_value=MagicMock()),
-        patch("omlx.engine.dflash.is_dflash_compatible", return_value=(True, "")),
+        patch.object(admin_routes, "dflash_compatibility", return_value=(True, "")),
     ):
         for payload in (
             {"dflash_enabled": True},
@@ -827,3 +913,28 @@ async def test_enabling_dflash_over_a_deleted_draft_path_is_rejected(tmp_path):
             assert exc.value.status_code == 422
 
     manager.set_settings.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_type,accepted", [("qwen3_5", True), ("gemma4", False)])
+async def test_paroquant_dflash_allows_only_qwen_targets(
+    tmp_path, model_type, accepted
+):
+    pool, entry = _failed_pool()
+    entry.model_path = str(tmp_path)
+    entry.config_model_type = model_type
+    entry.engine_type = "vlm"
+    (tmp_path / "config.json").write_text(
+        json.dumps({"quantization_config": {"quant_method": "paroquant"}})
+    )
+    settings = ModelSettings()
+    request = admin_routes.ModelSettingsRequest(dflash_enabled=True)
+
+    if accepted:
+        await _update_settings(pool, settings, request)
+        assert settings.dflash_enabled is True
+    else:
+        with pytest.raises(HTTPException) as exc:
+            await _update_settings(pool, settings, request)
+        assert exc.value.status_code == 400
+        assert exc.value.detail == admin_routes._PAROQUANT_REASON

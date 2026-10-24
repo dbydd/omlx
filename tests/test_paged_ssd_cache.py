@@ -763,6 +763,75 @@ class TestPagedSSDCacheManagerWithMLX:
             assert keys.shape == (1, 8, 64, 64)
             assert values.shape == (1, 8, 64, 64)
 
+    @pytest.mark.parametrize(
+        "original_layers",
+        [
+            pytest.param(0, id="new"),
+            pytest.param(1, id="incompatible"),
+            pytest.param(2, id="clean"),
+        ],
+    )
+    def test_close_persists_current_hot_cache_payload(
+        self, tmp_path: Path, mock_mlx, original_layers
+    ):
+        mx = mock_mlx
+        block_hash = b"\x41" * 32
+
+        def make_manager(layers, hot_cache_bytes):
+            return PagedSSDCacheManager(
+                cache_dir=tmp_path / "ssd_cache",
+                max_size_bytes=1024**2,
+                hot_cache_max_bytes=hot_cache_bytes,
+                expected_model_name="test-model",
+                expected_num_layers=layers,
+                expected_block_size=2,
+                expected_layer_cache_types=["KVCache"] * layers,
+            )
+
+        def save(manager, layers):
+            return manager.save_block(
+                block_hash,
+                [(mx.ones((1, 1, 2, 1)), mx.ones((1, 1, 2, 1))) for _ in range(layers)],
+                token_count=2,
+                model_name="test-model",
+                layer_cache_types=["KVCache"] * layers,
+            )
+
+        if original_layers:
+            original = make_manager(original_layers, 0)
+            try:
+                assert save(original, original_layers)
+            finally:
+                original.close()
+
+        manager = make_manager(2, 1024**2)
+        try:
+            if original_layers == 2:
+                assert manager.load_block(block_hash) is not None
+                assert not manager._hot_cache_get(block_hash)["dirty"]
+            else:
+                assert not manager.has_block(block_hash)
+                assert save(manager, 2)
+                assert manager._hot_cache_get(block_hash)["dirty"]
+        finally:
+            with patch.object(
+                manager, "_enqueue_ssd_write", wraps=manager._enqueue_ssd_write
+            ) as enqueue:
+                manager.close()
+        if original_layers == 2:
+            enqueue.assert_not_called()
+
+        reopened = make_manager(2, 1024**2)
+        try:
+            restored = reopened.load_block(block_hash)
+            assert restored is not None
+            assert len(restored) == 2
+            for keys, values in restored:
+                assert mx.array_equal(keys, mx.ones((1, 1, 2, 1))).item()
+                assert mx.array_equal(values, mx.ones((1, 1, 2, 1))).item()
+        finally:
+            reopened.close()
+
     def test_save_block_persists_tail_metadata_and_reindexes(
         self, tmp_path: Path, mock_mlx
     ):
@@ -1815,6 +1884,50 @@ class TestAsyncWriteAndTimeoutLoad:
                 time.sleep(0.01)
             with manager._hot_cache_lock:
                 assert manager._hot_cache[block_hash]["dirty"] is False
+        finally:
+            release_writer.set()
+            manager.close()
+
+    def test_bounded_pending_writes_waits_for_the_writer(self, tmp_path, mx):
+        """A bounded store serializes no further block while the queue is full."""
+        manager = PagedSSDCacheManager(
+            cache_dir=tmp_path / "bounded_pending",
+            max_size_bytes=100 * 1024**2,
+        )
+        release_writer = threading.Event()
+        write_block_file = manager._write_block_file
+
+        def blocked_write(*args, **kwargs):
+            assert release_writer.wait(timeout=5)
+            return write_block_file(*args, **kwargs)
+
+        manager._write_block_file = blocked_write
+        cache_data = [(mx.zeros((1, 4, 16, 32)), mx.ones((1, 4, 16, 32)))]
+        second_saved = threading.Event()
+
+        def save(block_hash):
+            return manager.save_block(
+                block_hash=block_hash,
+                cache_data=cache_data,
+                token_count=16,
+                model_name="test-model",
+                layer_cache_types=["KVCache"],
+                layer_meta_states=[(16,)],
+            )
+
+        def save_second():
+            save(b"bounded_second")
+            second_saved.set()
+
+        try:
+            with manager.bounded_pending_writes(1):
+                assert save(b"bounded_first")
+                thread = threading.Thread(target=save_second)
+                thread.start()
+                assert not second_saved.wait(timeout=0.2)
+                release_writer.set()
+                assert second_saved.wait(timeout=5)
+                thread.join(timeout=5)
         finally:
             release_writer.set()
             manager.close()

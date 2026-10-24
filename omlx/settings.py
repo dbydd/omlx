@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import shutil
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -186,6 +187,77 @@ def burst_decode_env(mode: str) -> dict[str, str]:
     }
 
 
+# Power states (macOS). The server reads one of three states and applies the
+# policy configured for it in ServerSettings.power_states:
+#   POWER_SERVING - on AC. The lid does not matter: a closed lid on AC is a
+#                   desk with a monitor.
+#   POWER_BATTERY - on battery with the lid open.
+#   POWER_SEALED  - on battery with the lid closed: a machine in a bag.
+POWER_SERVING = "serving"
+POWER_BATTERY = "battery"
+POWER_SEALED = "sealed"
+
+# Per-state policies. Each one says what a request may do and when a loaded
+# model unloads:
+#   resident  - a request loads on demand and the state never unloads it;
+#               each model's own ttl_seconds still applies.
+#   on_demand - a request loads on demand, and a model idle for idle_seconds
+#               unloads.
+#   reject    - as on_demand, and the server refuses to load anything until
+#               the state changes.
+POWER_MODES = ("resident", "on_demand", "reject")
+
+
+def default_power_states() -> dict[str, dict[str, Any]]:
+    """Policy for each power state: mode, idle window, pinned handling."""
+    return {
+        POWER_SERVING: {
+            "mode": "resident",
+            "idle_seconds": 900.0,
+            "unload_pinned": False,
+        },
+        POWER_BATTERY: {
+            "mode": "reject",
+            "idle_seconds": 120.0,
+            "unload_pinned": True,
+        },
+        POWER_SEALED: {
+            "mode": "reject",
+            "idle_seconds": 0.0,
+            "unload_pinned": True,
+        },
+    }
+
+
+def normalize_power_states(
+    raw: Any,
+    legacy_idle: float = 120.0,
+) -> dict[str, dict[str, Any]]:
+    """Coerce a stored value into a complete policy dict.
+
+    Unknown states and out-of-range fields keep their default, so a
+    hand-edited settings file cannot leave the serving loop without a policy.
+    ``legacy_idle`` seeds the battery window for files written before
+    power_states existed.
+    """
+    states = default_power_states()
+    with suppress(TypeError, ValueError):
+        states[POWER_BATTERY]["idle_seconds"] = max(0.0, float(legacy_idle))
+    if not isinstance(raw, dict):
+        return states
+    for name, cfg in raw.items():
+        if name not in states or not isinstance(cfg, dict):
+            continue
+        entry = states[name]
+        if cfg.get("mode") in POWER_MODES:
+            entry["mode"] = cfg["mode"]
+        with suppress(KeyError, TypeError, ValueError):
+            entry["idle_seconds"] = max(0.0, float(cfg["idle_seconds"]))
+        if isinstance(cfg.get("unload_pinned"), bool):
+            entry["unload_pinned"] = cfg["unload_pinned"]
+    return states
+
+
 @dataclass
 class ServerSettings:
     """Server configuration settings."""
@@ -199,7 +271,6 @@ class ServerSettings:
     auto_start_on_launch: bool = True
     burst_decode_mode: str = DEFAULT_BURST_DECODE_MODE
     preserve_mid_system_cache: bool = True
-    qwen4_gdn_decode_wide_proj: bool = False
     distributed_inference_enabled: bool = False
     # Human-readable size, same grammar as cache limits ("100MB", "1GB").
     max_audio_upload_size: str = "100MB"
@@ -215,13 +286,18 @@ class ServerSettings:
     # large resident models). Ticks stop after 5 minutes without requests.
     # 0 disables.
     gpu_keep_warm_interval: float = 0.5
-    # Battery pause (macOS): while running on battery, unload unpinned models
-    # once they have been idle for battery_idle_seconds, so the machine keeps
-    # only the server resident away from AC power. A request reloads a model
-    # on demand and plugging back in needs no action. battery_poll_interval
-    # is the seconds between power checks; 0 disables the feature.
+    # Power states (macOS): battery_poll_interval is the seconds between power
+    # checks, and 0 disables the loop entirely. When it runs, the state the
+    # machine reports (POWER_SERVING / POWER_BATTERY / POWER_SEALED) picks its
+    # policy out of power_states, and an admin change applies without a
+    # restart because the loop re-reads this every tick.
     battery_poll_interval: float = 0.0
+    # Legacy: seeds power_states[POWER_BATTERY]["idle_seconds"] for settings
+    # files written before power_states existed.
     battery_idle_seconds: float = 120.0
+    power_states: dict[str, dict[str, Any]] = field(
+        default_factory=default_power_states
+    )
 
     def max_audio_upload_bytes(self) -> int:
         """Configured audio upload limit in bytes. Non-positive sizes raise ValueError."""
@@ -262,7 +338,6 @@ class ServerSettings:
             auto_start_on_launch=data.get("auto_start_on_launch", True),
             burst_decode_mode=data.get("burst_decode_mode", DEFAULT_BURST_DECODE_MODE),
             preserve_mid_system_cache=data.get("preserve_mid_system_cache", True),
-            qwen4_gdn_decode_wide_proj=data.get("qwen4_gdn_decode_wide_proj", False),
             distributed_inference_enabled=data.get(
                 "distributed_inference_enabled",
                 False,
@@ -274,6 +349,10 @@ class ServerSettings:
             gpu_keep_warm_interval=float(data.get("gpu_keep_warm_interval", 0.5)),
             battery_poll_interval=float(data.get("battery_poll_interval", 0.0)),
             battery_idle_seconds=float(data.get("battery_idle_seconds", 120.0)),
+            power_states=normalize_power_states(
+                data.get("power_states"),
+                legacy_idle=float(data.get("battery_idle_seconds", 120.0)),
+            ),
         )
 
 
@@ -924,6 +1003,10 @@ class ClaudeCodeSettings:
     opus_model: str | None = None
     sonnet_model: str | None = None
     haiku_model: str | None = None
+    # When True, oMLX exposes derived Claude Desktop tier aliases
+    # (claude-opus / claude-sonnet / claude-haiku)
+    # that resolve at runtime to the configured tier models.
+    desktop_enabled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -932,6 +1015,7 @@ class ClaudeCodeSettings:
             "opus_model": self.opus_model,
             "sonnet_model": self.sonnet_model,
             "haiku_model": self.haiku_model,
+            "desktop_enabled": self.desktop_enabled,
         }
 
     @classmethod
@@ -942,6 +1026,7 @@ class ClaudeCodeSettings:
             opus_model=data.get("opus_model"),
             sonnet_model=data.get("sonnet_model"),
             haiku_model=data.get("haiku_model"),
+            desktop_enabled=data.get("desktop_enabled", False),
         )
 
 
@@ -1566,7 +1651,7 @@ class GlobalSettings:
         self._save_data(data)
 
     def ensure_inference_auth_setting(self) -> None:
-        """Add the manual opt-in default without persisting runtime overrides."""
+        """Add the opt-in default without persisting runtime overrides."""
         path = self.base_path / "settings.json"
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         auth = data.setdefault("auth", {})
@@ -1947,7 +2032,6 @@ class GlobalSettings:
         )
 
         return SchedulerConfig(
-            qwen4_gdn_decode_wide_proj=self.server.qwen4_gdn_decode_wide_proj,
             max_num_seqs=self.scheduler.max_concurrent_requests,
             completion_batch_size=self.scheduler.max_concurrent_requests,
             embedding_batch_size=self.scheduler.embedding_batch_size,

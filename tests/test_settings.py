@@ -29,6 +29,7 @@ from omlx.settings import (
     ServerSettings,
     UsageSettings,
     burst_decode_env,
+    default_power_states,
     get_settings,
     get_ssd_capacity,
     get_system_memory,
@@ -52,7 +53,6 @@ class TestServerSettings:
         assert settings.auto_start_on_launch is True
         assert settings.burst_decode_mode == "balanced"
         assert settings.preserve_mid_system_cache is True
-        assert settings.qwen4_gdn_decode_wide_proj is False
         assert settings.distributed_inference_enabled is False
         assert settings.max_audio_upload_size == "100MB"
         assert settings.max_audio_upload_bytes() == 100 * 1024 * 1024
@@ -62,6 +62,23 @@ class TestServerSettings:
         # battery pause is off until battery_poll_interval is set
         assert settings.battery_poll_interval == 0.0
         assert settings.battery_idle_seconds == 120.0
+        assert settings.power_states == {
+            "serving": {
+                "mode": "resident",
+                "idle_seconds": 900.0,
+                "unload_pinned": False,
+            },
+            "battery": {
+                "mode": "reject",
+                "idle_seconds": 120.0,
+                "unload_pinned": True,
+            },
+            "sealed": {
+                "mode": "reject",
+                "idle_seconds": 0.0,
+                "unload_pinned": True,
+            },
+        }
 
     def test_battery_pause_from_dict(self):
         """Battery pause settings round-trip through from_dict."""
@@ -70,9 +87,46 @@ class TestServerSettings:
         )
         assert settings.battery_poll_interval == 15.0
         assert settings.battery_idle_seconds == 60.0
+        # The legacy field still moves the battery window.
+        assert settings.power_states["battery"]["idle_seconds"] == 60.0
         defaults = ServerSettings.from_dict({})
         assert defaults.battery_poll_interval == 0.0
         assert defaults.battery_idle_seconds == 120.0
+
+    def test_power_states_from_dict(self):
+        """Each state's policy round-trips, and bad fields keep defaults."""
+        settings = ServerSettings.from_dict(
+            {
+                "power_states": {
+                    "serving": {"mode": "on_demand", "idle_seconds": 300},
+                    "battery": {"mode": "reject", "idle_seconds": 5},
+                    "sealed": {"mode": "on_demand", "unload_pinned": False},
+                    "nonsense": {"mode": "reject"},
+                }
+            }
+        )
+        assert settings.power_states["serving"] == {
+            "mode": "on_demand",
+            "idle_seconds": 300.0,
+            "unload_pinned": False,
+        }
+        assert settings.power_states["battery"]["idle_seconds"] == 5.0
+        assert settings.power_states["sealed"] == {
+            "mode": "on_demand",
+            "idle_seconds": 0.0,
+            "unload_pinned": False,
+        }
+        assert set(settings.power_states) == {"serving", "battery", "sealed"}
+
+        bad = ServerSettings.from_dict(
+            {
+                "power_states": {
+                    "battery": {"mode": "nonsense", "idle_seconds": -5},
+                }
+            }
+        )
+        assert bad.power_states["battery"]["mode"] == "reject"
+        assert bad.power_states["battery"]["idle_seconds"] == 0.0
 
     def test_custom_values(self):
         """Test custom values."""
@@ -101,7 +155,6 @@ class TestServerSettings:
             "auto_start_on_launch": True,
             "burst_decode_mode": "balanced",
             "preserve_mid_system_cache": True,
-            "qwen4_gdn_decode_wide_proj": False,
             "distributed_inference_enabled": False,
             "max_audio_upload_size": "100MB",
             "max_image_upload_size": "50MB",
@@ -110,14 +163,8 @@ class TestServerSettings:
             "gpu_keep_warm_interval": 0.5,
             "battery_poll_interval": 0.0,
             "battery_idle_seconds": 120.0,
+            "power_states": default_power_states(),
         }
-
-    def test_qwen4_decode_setting_round_trip(self):
-        settings = GlobalSettings()
-        assert ServerSettings.from_dict({}).qwen4_gdn_decode_wide_proj is False
-        settings.server = ServerSettings.from_dict({"qwen4_gdn_decode_wide_proj": True})
-        assert settings.server.to_dict()["qwen4_gdn_decode_wide_proj"] is True
-        assert settings.to_scheduler_config().qwen4_gdn_decode_wide_proj is True
 
     def test_from_dict_distributed_inference_is_opt_in(self):
         assert ServerSettings.from_dict({}).distributed_inference_enabled is False
@@ -2922,8 +2969,8 @@ class TestClaudeCodeValidation:
 class TestClaudeCodeRouteIntegration:
     """Integration tests for the settings chain: dataclass <-> dict <-> routes."""
 
-    def test_claude_code_to_dict_has_four_keys(self):
-        """to_dict must include all four keys so GlobalSettings.save() persists them."""
+    def test_claude_code_to_dict_has_five_keys(self):
+        """to_dict must include all five keys so GlobalSettings.save() persists them."""
         s = ClaudeCodeSettings(
             mode="local",
             opus_model="mlx-community/Qwen3-30B-A3B-4bit",
@@ -2936,6 +2983,7 @@ class TestClaudeCodeRouteIntegration:
             "opus_model",
             "sonnet_model",
             "haiku_model",
+            "desktop_enabled",
         }
         assert set(d.keys()) == expected_keys
 
@@ -2946,12 +2994,14 @@ class TestClaudeCodeRouteIntegration:
             opus_model="mlx-community/Qwen3-30B-A3B-4bit",
             sonnet_model="mlx-community/Qwen3-14B-4bit",
             haiku_model="mlx-community/Qwen3-4B-4bit",
+            desktop_enabled=True,
         )
         reloaded = ClaudeCodeSettings.from_dict(original.to_dict())
         assert reloaded.mode == "local"
         assert reloaded.opus_model == "mlx-community/Qwen3-30B-A3B-4bit"
         assert reloaded.sonnet_model == "mlx-community/Qwen3-14B-4bit"
         assert reloaded.haiku_model == "mlx-community/Qwen3-4B-4bit"
+        assert reloaded.desktop_enabled is True
 
     def test_claude_code_round_trip_null_models(self):
         """Null model fields survive the round-trip."""
@@ -2993,6 +3043,65 @@ class TestClaudeCodeRouteIntegration:
         )
         assert "claude_code_opus_model" in r.model_fields_set
         assert r.claude_code_opus_model == "mlx-community/Qwen3-30B-A3B-4bit"
+
+    @pytest.mark.parametrize(
+        ("before", "after", "action"),
+        [(False, True, "configure"), (True, False, "restore"), (False, False, None)],
+    )
+    def test_desktop_toggle_writes_claude_config_on_transition(
+        self, tmp_path, monkeypatch, before, after, action
+    ):
+        import asyncio
+
+        from omlx.admin import routes as admin_routes
+        from omlx.integrations import claude_desktop
+
+        gs = GlobalSettings(base_path=tmp_path)
+        gs.claude_code.desktop_enabled = before
+        monkeypatch.setattr(admin_routes, "_get_global_settings", lambda: gs)
+        calls = []
+        monkeypatch.setattr(
+            claude_desktop,
+            "configure_omlx_gateway",
+            lambda port, api_key: calls.append("configure") or True,
+        )
+        monkeypatch.setattr(
+            claude_desktop, "restore", lambda: calls.append("restore") or True
+        )
+
+        request = admin_routes.GlobalSettingsRequest.model_validate(
+            {"claude_code_desktop_enabled": after}
+        )
+        result = asyncio.run(
+            admin_routes.update_global_settings(request=request, is_admin=True)
+        )
+
+        assert gs.claude_code.desktop_enabled is after
+        assert calls == ([action] if action else [])
+        assert result["claude_desktop"].get("action") == action
+
+    def test_desktop_restore_endpoint_clears_toggle(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from omlx.admin import routes as admin_routes
+        from omlx.integrations import claude_desktop
+
+        gs = GlobalSettings(base_path=tmp_path)
+        gs.claude_code.desktop_enabled = True
+        monkeypatch.setattr(admin_routes, "_get_global_settings", lambda: gs)
+        monkeypatch.setattr(claude_desktop, "restore", lambda: True)
+        monkeypatch.setattr(claude_desktop, "is_configured", lambda: False)
+
+        result = asyncio.run(
+            admin_routes.claude_desktop_restore(
+                admin_routes.ClaudeDesktopRestoreRequest(), is_admin=True
+            )
+        )
+
+        assert result["configured"] is False
+        assert (
+            GlobalSettings.load(base_path=tmp_path).claude_code.desktop_enabled is False
+        )
 
 
 class TestCORSMiddleware:

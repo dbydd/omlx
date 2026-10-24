@@ -1,16 +1,18 @@
 class Omlx < Formula
-  CUSTOM_KERNELS = %w[bonsai decode_fast glm_moe_dsa minimax_m3 qwen35_prefill].freeze
-
   desc "LLM inference server optimized for Apple Silicon"
   homepage "https://github.com/jundot/omlx"
-  url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.1.dev1.tar.gz"
-  sha256 "cd83e8ecfaecb95407c3e48c793f639454b9bcddf002235fa0b1a2e4c05528a6"
-  version "0.7.1.dev1"
-  revision 3
+  url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.3.dev1.tar.gz"
+  sha256 "93cad6982531b8d1b426a453fbef9dc869878d1e6c084f5a2b4537e7f5c685ed"
+  version "0.7.3.dev1"
+  revision 1
   license "Apache-2.0"
   patch do
     url "https://raw.githubusercontent.com/dbydd/omlx/main/patches/power-states.patch"
-    sha256 "00cb473acb1e41eae0a72d3e384137fb3a0ebc4bdf1f2ca5b8265a9cbfbab71f"
+    sha256 "0288564d354401db04b895803d161a409a4ff5a4ca062c0db00deac95c55c25e"
+  end
+  patch do
+    url "https://raw.githubusercontent.com/dbydd/omlx/main/patches/clef-context-window.patch"
+    sha256 "8263f2cfd364509e3897c29df5f020fdb057ad344573104013399f4ce764cd6f"
   end
 
   head "https://github.com/jundot/omlx.git", branch: "main"
@@ -98,22 +100,32 @@ class Omlx < Formula
     pip_install = [libexec/"bin/pip", "install", *pip_flags, "--no-binary", no_binary]
 
     if build.with?("custom-kernel")
-      # `metal` ships with Xcode, not the Command Line Tools.
-      unless quiet_system("/usr/bin/xcrun", "-f", "metal")
+      # Execute the compiler rather than looking for it. `xcrun -f metal` only
+      # asks whether a file named `metal` is on the search path, and since Xcode
+      # 26 that file is a shim that forwards to the separately downloaded Metal
+      # toolchain. The shim is present whether or not the toolchain behind it is
+      # usable, so the lookup succeeds and the build then fails much later with
+      # an opaque CMake error in the metallib targets. Running the compiler is
+      # the only check that agrees with whether the build will work.
+      unless quiet_system("/usr/bin/xcrun", "metal", "--version")
         odie <<~EOS
-          --with-custom-kernel requires the Metal compiler, but `xcrun -f metal` found none.
+          --with-custom-kernel requires the Metal compiler, but `xcrun metal --version` failed.
           It ships with full Xcode, and on current Xcode versions is a separate component:
 
             xcodebuild -downloadComponent MetalToolchain
+
+          If the component is already installed, a stale xcrun lookup cache causes this
+          same failure and is worth clearing first, because it costs nothing:
+
+            rm -f "${TMPDIR:-/tmp}/xcrun_db"
 
           Otherwise install omlx without the custom kernels: brew install omlx
         EOS
       end
 
-      kernel_sources = CUSTOM_KERNELS.map do |kernel|
-        buildpath/"omlx/custom_kernels/#{kernel}/csrc"
-      end
-      unless kernel_sources.all?(&:directory?)
+      # Each kernel package keeps its sources in <package>/csrc; the package
+      # list comes from the tarball itself so any release layout builds.
+      unless (buildpath/"omlx/custom_kernels").glob("*/csrc").any?(&:directory?)
         odie "--with-custom-kernel requires oMLX custom kernel sources; use --HEAD or a release that includes them"
       end
 
@@ -261,13 +273,11 @@ class Omlx < Formula
 
   def verify_custom_kernels(python)
     system python, "-c", <<~PYTHON
-      import importlib
-      failed = {}
-      for package in #{CUSTOM_KERNELS.inspect}:
-          fast = importlib.import_module(f"omlx.custom_kernels.{package}.fast")
-          if not fast.is_native_available():
-              failed[package] = str(fast.import_error())
-      assert not failed, failed
+      from omlx.custom_kernels import native_kernel_status
+      status = native_kernel_status()
+      failed = {name: report["import_error"] for name, report in status.items()
+                if not report["available"]}
+      assert status and not failed, failed
     PYTHON
   end
 

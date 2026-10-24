@@ -42,6 +42,13 @@ NOUL_DEFAULT_CRITERIA = {
 MAX_LENGTH = 16384
 
 
+# Clef checkpoints ride a Qwen3.5 backbone whose own window is far larger
+# (262144 on the release); 16384 is the joint head's evaluated window, not
+# the model's, so serve the backbone's window when the checkpoint states it.
+def _context_limit(backbone: DecisionBackbone) -> int:
+    return backbone.max_position_embeddings or MAX_LENGTH
+
+
 def render(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -379,6 +386,8 @@ class ClefModel:
 
     def encode(self, request: dict, truncate: bool = True) -> ClefPlan:
         """Tokenize and preprocess on the CPU; raises the request errors."""
+        if request.get("videos"):
+            raise DecisionRequestError("this model does not take videos")
         backbone = self.backbone
         images = decode_images(request.get("images"))
         pixel_values = image_grid_thw = None
@@ -396,7 +405,11 @@ class ClefModel:
             image_tokens = backbone.tokenize(text + "\n")
 
         ids, fields = encode_record(
-            backbone.tokenize, request, image_tokens, truncate=truncate
+            backbone.tokenize,
+            request,
+            image_tokens,
+            max_length=_context_limit(backbone),
+            truncate=truncate,
         )
         return ClefPlan(
             input_ids=np.asarray(ids, dtype=np.int32),
