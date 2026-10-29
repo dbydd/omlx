@@ -93,7 +93,12 @@ class Omlx < Formula
       # with "mis-aligned LINKEDIT string pool". Build them from source, and
       # keep Cargo/maturin's release stripping off so the beta's broken
       # `strip` (llvm/llvm-project#203678) never touches the fresh dylibs.
-      no_binary += ",tokenizers"
+      #
+      # watchfiles (pulled in by uvicorn[standard] through mlx-audio's [all]
+      # extras) is a Rust wheel with the same problem one step later: its
+      # Mach-O header has no room for the dylib ID rewrite, so Homebrew's
+      # "fix install linkage" pass fails with MachO::HeaderPadError.
+      no_binary += ",tokenizers,watchfiles"
       ENV["CARGO_PROFILE_RELEASE_STRIP"] = "false"
       ENV["MATURIN_STRIP"] = "false"
       # Pip reuses locally built wheels even under --no-binary, so a wheel

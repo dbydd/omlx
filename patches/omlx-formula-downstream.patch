@@ -1,5 +1,5 @@
 diff --git a/Formula/omlx.rb b/Formula/omlx.rb
-index 260f9e0a..dde5fc80 100644
+index 260f9e0a..a9891909 100644
 --- a/Formula/omlx.rb
 +++ b/Formula/omlx.rb
 @@ -1,15 +1,38 @@
@@ -43,7 +43,21 @@ index 260f9e0a..dde5fc80 100644
  
    depends_on "rust" => :build
    depends_on arch: :arm64
-@@ -121,8 +144,18 @@ class Omlx < Formula
+@@ -70,7 +93,12 @@ class Omlx < Formula
+       # with "mis-aligned LINKEDIT string pool". Build them from source, and
+       # keep Cargo/maturin's release stripping off so the beta's broken
+       # `strip` (llvm/llvm-project#203678) never touches the fresh dylibs.
+-      no_binary += ",tokenizers"
++      #
++      # watchfiles (pulled in by uvicorn[standard] through mlx-audio's [all]
++      # extras) is a Rust wheel with the same problem one step later: its
++      # Mach-O header has no room for the dylib ID rewrite, so Homebrew's
++      # "fix install linkage" pass fails with MachO::HeaderPadError.
++      no_binary += ",tokenizers,watchfiles"
+       ENV["CARGO_PROFILE_RELEASE_STRIP"] = "false"
+       ENV["MATURIN_STRIP"] = "false"
+       # Pip reuses locally built wheels even under --no-binary, so a wheel
+@@ -121,8 +149,18 @@ class Omlx < Formula
        ENV.append "CMAKE_ARGS", "-DPython_EXECUTABLE=#{libexec}/bin/python"
      end
  
@@ -64,7 +78,7 @@ index 260f9e0a..dde5fc80 100644
      system(*pip_install, install_spec)
  
      if build.with?("custom-kernel")
-@@ -137,6 +170,12 @@ class Omlx < Formula
+@@ -137,6 +175,12 @@ class Omlx < Formula
        system(*pip_install, ".[all]")
      end
  
