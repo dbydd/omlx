@@ -1,0 +1,16 @@
+diff --git a/omlx/model_discovery.py b/omlx/model_discovery.py
+index 74cb3b7a..9b292143 100644
+--- a/omlx/model_discovery.py
++++ b/omlx/model_discovery.py
+@@ -390,6 +390,11 @@ AUDIO_TTS_ARCHITECTURES = {
+     "VibeVoiceForConditionalGeneration",
+     "VibeVoiceStreamingForConditionalGenerationInference",
+     "KugelAudioForConditionalGeneration",
++    # Ming-3.0 TTS (inclusionAI) and Ming-omni-tts ride a Qwen2.5 backbone
++    # and declare model_type "dense", which _LLM_TYPE_COLLISIONS strips from
++    # the mlx-audio-derived TTS set. The architecture string is the only
++    # unambiguous discriminator in their config.json.
++    "BailingMMNativeForConditionalGeneration",
+ }
+ 
+ AUDIO_STS_ARCHITECTURES = {

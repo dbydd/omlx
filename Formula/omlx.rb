@@ -1,18 +1,27 @@
 class Omlx < Formula
   desc "LLM inference server optimized for Apple Silicon"
   homepage "https://github.com/jundot/omlx"
-  url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.3.dev1.tar.gz"
-  sha256 "93cad6982531b8d1b426a453fbef9dc869878d1e6c084f5a2b4537e7f5c685ed"
-  version "0.7.3.dev1"
+  # Upstream main at 33f25891, twenty commits past v0.7.3rc1: that is where
+  # mlx-audio moved to 8c244a1 (0.6.3), which Ming-3.0 TTS needs, and where
+  # LFM3 speech landed. The version stays 0.7.3rc1 because the commit has no
+  # tag of its own; revision 1 marks a different tarball under that version,
+  # and still sorts above the installed 0.7.3.dev1_1 keg.
+  url "https://github.com/jundot/omlx/archive/33f2589102e7f778b23cf2a2ece16716396dfb85.tar.gz"
+  sha256 "a91ea3889b0b0c25eea7d13f6aae8ba535606702b2290f4f617b28df3fc5c2e8"
+  version "0.7.3rc1"
   revision 1
   license "Apache-2.0"
   patch do
     url "https://raw.githubusercontent.com/dbydd/omlx/main/patches/power-states.patch"
-    sha256 "0288564d354401db04b895803d161a409a4ff5a4ca062c0db00deac95c55c25e"
+    sha256 "31ee5cb0752a6bb5dfb98d20254f908c543346022160f4dd152722a5f1c975cb"
   end
   patch do
     url "https://raw.githubusercontent.com/dbydd/omlx/main/patches/clef-context-window.patch"
-    sha256 "8263f2cfd364509e3897c29df5f020fdb057ad344573104013399f4ce764cd6f"
+    sha256 "50c22e46d1e7b2fb098f55bbdb539bfc2d38124f59079c9bc8f46285637f1f13"
+  end
+  patch do
+    url "https://raw.githubusercontent.com/dbydd/omlx/main/patches/ming3-tts-detection.patch"
+    sha256 "2d5b91ac855c39bef6a821c140fd622e89b55853c5294caa0bb766b8c1d91aa1"
   end
 
   head "https://github.com/jundot/omlx.git", branch: "main"
@@ -37,11 +46,10 @@ class Omlx < Formula
     skip_clean "libexec" if MacOS.version >= "27"
   end
 
-  # mlx-audio pins mlx-lm==0.31.1 which conflicts with omlx's git-pinned
-  # mlx-lm. Fetch source separately so we can patch the pin before install.
+  # Same mlx-audio commit as pyproject.toml, installed with its [all] extras.
   resource "mlx-audio" do
     url "https://github.com/Blaizzy/mlx-audio.git",
-      revision: "51753266e0a4f766fd5e6fbc46652224efc23981"
+      revision: "8c244a1faff44cfa69e3151c195f52a4c1c90be5"
   end
 
   # Kokoro's English G2P path uses misaki + spaCy. Bundle the spaCy
@@ -139,7 +147,14 @@ class Omlx < Formula
     # Install omlx with the extras the options above ask for. Each option
     # mirrors an omlx optional-dependencies group, so a Homebrew install can
     # carry the same set a pip install would (`pip install 'omlx[mcp,modelscope]'`).
-    extras = %w[grammar mcp cluster modelscope paroquant].select { |extra| build.with?(extra) }
+    #
+    # `audio` is not optional. mlx-audio 0.6.3 dropped the misaki / spaCy /
+    # librosa extras that used to bring oMLX's TTS runtime in, and the spacy
+    # model installed below only loads if spaCy is present, so the audio
+    # extra is what declares it now.
+    extras = %w[audio grammar mcp cluster modelscope paroquant].select { |extra|
+      extra == "audio" || build.with?(extra)
+    }
     install_spec = extras.empty? ? buildpath.to_s : "#{buildpath}[#{extras.join(",")}]"
     system(*pip_install, install_spec)
 
@@ -151,11 +166,15 @@ class Omlx < Formula
       end
     end
 
-    # Install mlx-audio with patched mlx-lm pin to avoid version conflict
     resource("mlx-audio").stage do
-      inreplace "pyproject.toml", '"mlx-lm==0.31.1"', '"mlx-lm>=0.31.1"'
       system(*pip_install, ".[all]")
     end
+
+    # spacy 3.8.16's Tokenizer._flush_specials raises "OverflowError: Python
+    # int too large to convert to C ssize_t" with preshed 3.0.14. The audio
+    # extra pulls spacy in with the newest preshed, so pin it back to the
+    # release that loads en_core_web_sm before the model smoke test below.
+    system(*pip_install, "preshed==3.0.13")
 
     # Install the spaCy English model required by misaki for Kokoro TTS.
     # Homebrew's cached resource path is hash-prefixed, which pip rejects

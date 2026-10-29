@@ -1,5 +1,5 @@
 diff --git a/omlx/models/clef.py b/omlx/models/clef.py
-index 9e0cc59..ec2cd9c 100644
+index 2cbca8e8..702322c0 100644
 --- a/omlx/models/clef.py
 +++ b/omlx/models/clef.py
 @@ -42,6 +42,13 @@ NOUL_DEFAULT_CRITERIA = {
@@ -16,7 +16,7 @@ index 9e0cc59..ec2cd9c 100644
  def render(value: Any) -> str:
      if isinstance(value, str):
          return value
-@@ -398,7 +405,11 @@ class ClefModel:
+@@ -402,7 +409,11 @@ class ClefModel:
              image_tokens = backbone.tokenize(text + "\n")
  
          ids, fields = encode_record(

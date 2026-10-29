@@ -1,8 +1,8 @@
 diff --git a/apps/omlx-web/omlx_web/i18n/cs.json b/apps/omlx-web/omlx_web/i18n/cs.json
-index 2ae0554..822740c 100644
+index 3299f8ef..4ce755ec 100644
 --- a/apps/omlx-web/omlx_web/i18n/cs.json
 +++ b/apps/omlx-web/omlx_web/i18n/cs.json
-@@ -1169,6 +1169,20 @@
+@@ -1172,6 +1172,20 @@
    "settings.advanced.burst_decode_aggressive": "Agresivní (nejrychlejší)",
    "settings.advanced.preserve_mid_system_cache": "Zachovat prefix cache pro systémové poznámky uprostřed konverzace",
    "settings.advanced.preserve_mid_system_cache_hint": "Když šablona chatu modelu nedokáže vykreslit systémové nebo vývojářské zprávy po prvním kole, oMLX bezpečné poznámky na konci přepíše do nejbližší uživatelské zprávy, aby dlouhá historie konverzace zůstala prefixově cachovatelná. Posloupnosti tool call a tool result se zůstanou zachovány.",
@@ -24,10 +24,10 @@ index 2ae0554..822740c 100644
    "settings.advanced.initial_cache_blocks": "Počáteční bloky cache",
    "settings.advanced.initial_cache_blocks_hint": "Bloky předalokované při startu. Vyšší hodnoty snižují režii dynamické alokace.",
 diff --git a/apps/omlx-web/omlx_web/i18n/en.json b/apps/omlx-web/omlx_web/i18n/en.json
-index 5eec95d..2cac9f8 100644
+index 20d0c247..184e2a2b 100644
 --- a/apps/omlx-web/omlx_web/i18n/en.json
 +++ b/apps/omlx-web/omlx_web/i18n/en.json
-@@ -1169,6 +1169,20 @@
+@@ -1172,6 +1172,20 @@
    "settings.advanced.burst_decode_aggressive": "Aggressive (fastest)",
    "settings.advanced.preserve_mid_system_cache": "Preserve Prefix Cache for Mid-Conversation System Notes",
    "settings.advanced.preserve_mid_system_cache_hint": "When a model's chat template cannot render system or developer messages after the first turn, oMLX rewrites safe trailing notes into the nearest user message so long conversation history can remain prefix-cacheable. Tool call and tool result sequences are left unchanged.",
@@ -49,10 +49,10 @@ index 5eec95d..2cac9f8 100644
    "settings.advanced.initial_cache_blocks": "Initial Cache Blocks",
    "settings.advanced.initial_cache_blocks_hint": "Blocks pre-allocated at startup. Higher values reduce dynamic allocation overhead.",
 diff --git a/apps/omlx-web/omlx_web/i18n/es.json b/apps/omlx-web/omlx_web/i18n/es.json
-index 6a56d90..7eac39b 100644
+index aea2c7b7..890a8462 100644
 --- a/apps/omlx-web/omlx_web/i18n/es.json
 +++ b/apps/omlx-web/omlx_web/i18n/es.json
-@@ -1169,6 +1169,20 @@
+@@ -1172,6 +1172,20 @@
    "settings.advanced.burst_decode_aggressive": "Aggressive (fastest)",
    "settings.advanced.preserve_mid_system_cache": "Preserve Prefix Cache for Mid-Conversation System Notes",
    "settings.advanced.preserve_mid_system_cache_hint": "When a model's chat template cannot render system or developer messages after the first turn, oMLX rewrites safe trailing notes into the nearest user message so long conversation history can remain prefix-cacheable. Tool call and tool result sequences are left unchanged.",
@@ -74,10 +74,10 @@ index 6a56d90..7eac39b 100644
    "settings.advanced.initial_cache_blocks": "Bloques Iniciales de Caché",
    "settings.advanced.initial_cache_blocks_hint": "Bloques pre-asignados al inicio. Valores más altos reducen la sobrecarga de asignación dinámica.",
 diff --git a/apps/omlx-web/omlx_web/i18n/fr.json b/apps/omlx-web/omlx_web/i18n/fr.json
-index c249e02..2f53492 100644
+index c0e9e68f..5af1428a 100644
 --- a/apps/omlx-web/omlx_web/i18n/fr.json
 +++ b/apps/omlx-web/omlx_web/i18n/fr.json
-@@ -1169,6 +1169,20 @@
+@@ -1172,6 +1172,20 @@
    "settings.advanced.burst_decode_aggressive": "Aggressive (fastest)",
    "settings.advanced.preserve_mid_system_cache": "Preserve Prefix Cache for Mid-Conversation System Notes",
    "settings.advanced.preserve_mid_system_cache_hint": "When a model's chat template cannot render system or developer messages after the first turn, oMLX rewrites safe trailing notes into the nearest user message so long conversation history can remain prefix-cacheable. Tool call and tool result sequences are left unchanged.",
@@ -99,10 +99,10 @@ index c249e02..2f53492 100644
    "settings.advanced.initial_cache_blocks": "Blocs de cache initiaux",
    "settings.advanced.initial_cache_blocks_hint": "Blocs pré-alloués au démarrage. Les valeurs plus élevées réduisent les frais d'allocation dynamique.",
 diff --git a/apps/omlx-web/omlx_web/i18n/ja.json b/apps/omlx-web/omlx_web/i18n/ja.json
-index a9bc2f6..160a4ad 100644
+index ccbdfe96..860dbc95 100644
 --- a/apps/omlx-web/omlx_web/i18n/ja.json
 +++ b/apps/omlx-web/omlx_web/i18n/ja.json
-@@ -1169,6 +1169,20 @@
+@@ -1172,6 +1172,20 @@
    "settings.advanced.burst_decode_aggressive": "Aggressive (fastest)",
    "settings.advanced.preserve_mid_system_cache": "Preserve Prefix Cache for Mid-Conversation System Notes",
    "settings.advanced.preserve_mid_system_cache_hint": "When a model's chat template cannot render system or developer messages after the first turn, oMLX rewrites safe trailing notes into the nearest user message so long conversation history can remain prefix-cacheable. Tool call and tool result sequences are left unchanged.",
@@ -124,10 +124,10 @@ index a9bc2f6..160a4ad 100644
    "settings.advanced.initial_cache_blocks": "初期キャッシュブロック数",
    "settings.advanced.initial_cache_blocks_hint": "起動時に事前割り当てするブロック数。大きいほど動的割り当てのオーバーヘッドが減少。",
 diff --git a/apps/omlx-web/omlx_web/i18n/ko.json b/apps/omlx-web/omlx_web/i18n/ko.json
-index 395a360..22b8a5a 100644
+index 9ffba684..ae5bef04 100644
 --- a/apps/omlx-web/omlx_web/i18n/ko.json
 +++ b/apps/omlx-web/omlx_web/i18n/ko.json
-@@ -1169,6 +1169,20 @@
+@@ -1172,6 +1172,20 @@
    "settings.advanced.burst_decode_aggressive": "Aggressive (fastest)",
    "settings.advanced.preserve_mid_system_cache": "Preserve Prefix Cache for Mid-Conversation System Notes",
    "settings.advanced.preserve_mid_system_cache_hint": "When a model's chat template cannot render system or developer messages after the first turn, oMLX rewrites safe trailing notes into the nearest user message so long conversation history can remain prefix-cacheable. Tool call and tool result sequences are left unchanged.",
@@ -149,10 +149,10 @@ index 395a360..22b8a5a 100644
    "settings.advanced.initial_cache_blocks": "초기 캐시 블록 수",
    "settings.advanced.initial_cache_blocks_hint": "시작 시 미리 할당할 블록 수. 높을수록 동적 할당 오버헤드 감소.",
 diff --git a/apps/omlx-web/omlx_web/i18n/pt-BR.json b/apps/omlx-web/omlx_web/i18n/pt-BR.json
-index ac34210..95afa3b 100644
+index 104f72b0..1dfcf162 100644
 --- a/apps/omlx-web/omlx_web/i18n/pt-BR.json
 +++ b/apps/omlx-web/omlx_web/i18n/pt-BR.json
-@@ -1169,6 +1169,20 @@
+@@ -1172,6 +1172,20 @@
    "settings.advanced.burst_decode_aggressive": "Agressivo (mais rápido)",
    "settings.advanced.preserve_mid_system_cache": "Preservar Cache de Prefixo para Notas de Sistema no Meio da Conversa",
    "settings.advanced.preserve_mid_system_cache_hint": "Quando o template de chat de um modelo não consegue renderizar mensagens de sistema ou desenvolvedor após o primeiro turno, o oMLX reescreve notas finais seguras na mensagem de usuário mais próxima para que o histórico longo de conversas permaneça armazenável em prefixo. Sequências de chamadas e resultados de ferramentas são mantidas sem alteração.",
@@ -174,10 +174,10 @@ index ac34210..95afa3b 100644
    "settings.advanced.initial_cache_blocks": "Blocos Iniciais de Cache",
    "settings.advanced.initial_cache_blocks_hint": "Blocos pré-alocados na inicialização. Valores maiores reduzem a sobrecarga de alocação dinâmica.",
 diff --git a/apps/omlx-web/omlx_web/i18n/ru.json b/apps/omlx-web/omlx_web/i18n/ru.json
-index 4773c4c..8b998f1 100644
+index 0f8f09d6..1f71248b 100644
 --- a/apps/omlx-web/omlx_web/i18n/ru.json
 +++ b/apps/omlx-web/omlx_web/i18n/ru.json
-@@ -1169,6 +1169,20 @@
+@@ -1172,6 +1172,20 @@
    "settings.advanced.burst_decode_aggressive": "Агрессивный (самый быстрый)",
    "settings.advanced.preserve_mid_system_cache": "Сохранять кэш префикса для системных заметок в середине диалога",
    "settings.advanced.preserve_mid_system_cache_hint": "Если шаблон чата модели не умеет выводить системные или developer-сообщения после первого хода, oMLX переписывает безопасные завершающие заметки в ближайшее сообщение пользователя, чтобы длинная история оставалась пригодной для кэша префикса. Последовательности вызовов инструментов и их результатов остаются без изменений.",
@@ -199,10 +199,10 @@ index 4773c4c..8b998f1 100644
    "settings.advanced.initial_cache_blocks": "Начальные блоки кэша",
    "settings.advanced.initial_cache_blocks_hint": "Блоки предварительно выделяются при запуске. Более высокие значения уменьшают накладные расходы на динамическое выделение.",
 diff --git a/apps/omlx-web/omlx_web/i18n/zh-TW.json b/apps/omlx-web/omlx_web/i18n/zh-TW.json
-index 09d02e1..8cfaff6 100644
+index 50b372de..a9494d36 100644
 --- a/apps/omlx-web/omlx_web/i18n/zh-TW.json
 +++ b/apps/omlx-web/omlx_web/i18n/zh-TW.json
-@@ -1169,6 +1169,20 @@
+@@ -1172,6 +1172,20 @@
    "settings.advanced.burst_decode_aggressive": "積極（最快）",
    "settings.advanced.preserve_mid_system_cache": "保留對話中途系統訊息的前綴快取",
    "settings.advanced.preserve_mid_system_cache_hint": "當模型的聊天範本無法在第一輪之後呈現系統或開發者訊息時，oMLX 會將安全的尾隨訊息重寫至最近的使用者訊息中，使長對話記錄仍可進行前綴快取。工具呼叫和工具結果序列保持不變。",
@@ -224,10 +224,10 @@ index 09d02e1..8cfaff6 100644
    "settings.advanced.initial_cache_blocks": "初始快取區塊數",
    "settings.advanced.initial_cache_blocks_hint": "啟動時預先分配的區塊數。數值越高，動態分配的開銷越小。",
 diff --git a/apps/omlx-web/omlx_web/i18n/zh.json b/apps/omlx-web/omlx_web/i18n/zh.json
-index 181e94d..faeb54a 100644
+index 579fb431..26701e73 100644
 --- a/apps/omlx-web/omlx_web/i18n/zh.json
 +++ b/apps/omlx-web/omlx_web/i18n/zh.json
-@@ -1169,6 +1169,20 @@
+@@ -1172,6 +1172,20 @@
    "settings.advanced.burst_decode_aggressive": "激进（最快）",
    "settings.advanced.preserve_mid_system_cache": "保留对话中间系统消息的前缀缓存",
    "settings.advanced.preserve_mid_system_cache_hint": "当模型的聊天模板无法在首轮之后渲染系统或开发者消息时，oMLX 将安全的尾部消息改写到最近的用户消息中，使长对话历史保持前缀可缓存。工具调用和工具结果序列保持不变。",
@@ -249,10 +249,10 @@ index 181e94d..faeb54a 100644
    "settings.advanced.initial_cache_blocks": "初始缓存块数",
    "settings.advanced.initial_cache_blocks_hint": "启动时预分配的块数。值越大，动态分配开销越小。",
 diff --git a/apps/omlx-web/omlx_web/static/js/dashboard.js b/apps/omlx-web/omlx_web/static/js/dashboard.js
-index 2ec963c..9a42d1a 100644
+index 1e413859..49e44f1d 100644
 --- a/apps/omlx-web/omlx_web/static/js/dashboard.js
 +++ b/apps/omlx-web/omlx_web/static/js/dashboard.js
-@@ -1430,6 +1430,8 @@
+@@ -1433,6 +1433,8 @@
                              sse_keepalive_mode: this.globalSettings.server.sse_keepalive_mode,
                              burst_decode_mode: this.globalSettings.server.burst_decode_mode,
                              preserve_mid_system_cache: this.globalSettings.server.preserve_mid_system_cache,
@@ -262,10 +262,10 @@ index 2ec963c..9a42d1a 100644
                              max_audio_upload_size: this.globalSettings.server.max_audio_upload_size,
                              model_dirs: this.globalSettings.model.model_dirs.filter(d => d.trim()),
 diff --git a/apps/omlx-web/omlx_web/templates/dashboard/_settings.html b/apps/omlx-web/omlx_web/templates/dashboard/_settings.html
-index 5c5f702..3c5a177 100644
+index f5f99ecb..daa99da6 100644
 --- a/apps/omlx-web/omlx_web/templates/dashboard/_settings.html
 +++ b/apps/omlx-web/omlx_web/templates/dashboard/_settings.html
-@@ -1079,6 +1079,59 @@
+@@ -1080,6 +1080,60 @@
                                          </div>
                                      </div>
  
@@ -311,6 +311,7 @@ index 5c5f702..3c5a177 100644
 +                                                        <button type="button"
 +                                                                @click="globalSettings.server.power_states[state].unload_pinned = !globalSettings.server.power_states[state].unload_pinned"
 +                                                                :class="globalSettings.server.power_states[state].unload_pinned ? 'bg-black' : 'bg-neutral-200'"
++                                                                :aria-checked="globalSettings.server.power_states[state].unload_pinned ? 'true' : 'false'"
 +                                                                class="relative w-11 h-6 flex-shrink-0 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black">
 +                                                            <span :class="globalSettings.server.power_states[state].unload_pinned ? 'translate-x-5' : 'translate-x-0'"
 +                                                                  class="block w-5 h-5 bg-white rounded-full shadow-sm transform transition-transform duration-300 absolute top-0.5 left-0.5"></span>
@@ -327,7 +328,7 @@ index 5c5f702..3c5a177 100644
                                          <div class="flex items-center gap-2">
 diff --git a/apps/omlx-web/tests/test_admin_power_states_ui.py b/apps/omlx-web/tests/test_admin_power_states_ui.py
 new file mode 100644
-index 0000000..52603bd
+index 00000000..52603bd4
 --- /dev/null
 +++ b/apps/omlx-web/tests/test_admin_power_states_ui.py
 @@ -0,0 +1,66 @@
@@ -398,10 +399,10 @@ index 0000000..52603bd
 +        missing_keys = POWER_I18N_KEYS - translations.keys()
 +        assert not missing_keys, f"{locale_path.name} is missing {sorted(missing_keys)}"
 diff --git a/omlx/admin/routes.py b/omlx/admin/routes.py
-index 9cfc776..56c6491 100644
+index 21d507f7..fedb83e6 100644
 --- a/omlx/admin/routes.py
 +++ b/omlx/admin/routes.py
-@@ -81,9 +81,11 @@ from ..patches.k2_horizon import REASONING_EFFORTS
+@@ -86,9 +86,11 @@ from ..patches.k2_horizon import REASONING_EFFORTS
  from ..patches.moe_offload_compat import moe_offload_compatibility
  from ..settings import (
      BURST_DECODE_MODES,
@@ -411,9 +412,9 @@ index 9cfc776..56c6491 100644
      burst_decode_env,
 +    normalize_power_states,
  )
+ from ..utils import gpu_power
  from ..utils.fatal import is_command_buffer_error
- from ..utils.hardware import (
-@@ -671,6 +673,9 @@ class GlobalSettingsRequest(BaseModel):
+@@ -694,6 +696,9 @@ class GlobalSettingsRequest(BaseModel):
      burst_decode_mode: str | None = None  # "off" / "light" / "balanced" / "aggressive"
      preserve_mid_system_cache: bool | None = None
      gpu_keep_warm_interval: float | None = None
@@ -423,7 +424,7 @@ index 9cfc776..56c6491 100644
      distributed_inference_enabled: bool | None = None
      max_audio_upload_size: str | None = None
  
-@@ -4614,6 +4619,24 @@ def _global_settings_response(global_settings):
+@@ -4607,6 +4612,24 @@ def _global_settings_response(global_settings):
                  "gpu_keep_warm_interval",
                  0.5,
              ),
@@ -448,7 +449,7 @@ index 9cfc776..56c6491 100644
              "distributed_inference_enabled": getattr(
                  global_settings.server,
                  "distributed_inference_enabled",
-@@ -4936,6 +4959,30 @@ async def update_global_settings(
+@@ -4932,6 +4955,30 @@ async def update_global_settings(
              keep_warm_pool.configure_gpu_keep_warm(interval)
              keep_warm_pool._ensure_gpu_keep_warm_task()
          runtime_applied.append("gpu_keep_warm_interval")
@@ -480,10 +481,10 @@ index 9cfc776..56c6491 100644
          # Route exposure and Bonjour publication are fixed at process startup,
          # so this intentionally takes effect after the normal settings restart.
 diff --git a/omlx/engine_pool.py b/omlx/engine_pool.py
-index d26cb17..a976aa7 100644
+index 0c4ec5ed..dc8eb9c2 100644
 --- a/omlx/engine_pool.py
 +++ b/omlx/engine_pool.py
-@@ -477,6 +477,9 @@ class EnginePool:
+@@ -484,6 +484,9 @@ class EnginePool:
          self._unloading_models: set[str] = set()
          self._failed_load_reclaim_tasks: set[asyncio.Task[None]] = set()
          self._failed_load_reclaim_task: asyncio.Task[None] | None = None
@@ -493,7 +494,7 @@ index d26cb17..a976aa7 100644
          self._shutting_down = False
          # Last logged forced-offload state per (model_id, kind).
          self._offload_warn_state: dict[tuple[str, str], bool] = {}
-@@ -2586,6 +2589,11 @@ class EnginePool:
+@@ -2714,6 +2717,11 @@ class EnginePool:
          )
          if ready is not None:
              return ready
@@ -505,7 +506,7 @@ index d26cb17..a976aa7 100644
          async with self._lock:
              entry = self._entries.get(model_id)
              if not entry:
-@@ -2962,6 +2970,57 @@ class EnginePool:
+@@ -3123,6 +3131,57 @@ class EnginePool:
              await self._unload_engine(model_id)
              return True
  
@@ -564,20 +565,21 @@ index d26cb17..a976aa7 100644
      async def acquire(self, model_id: str, force_lm: bool = False):
          """Acquire an engine with an atomic in-use lease.
 diff --git a/omlx/server.py b/omlx/server.py
-index 7ba966c..422206a 100644
+index ab1963ef..2402fa6c 100644
 --- a/omlx/server.py
 +++ b/omlx/server.py
-@@ -46,6 +46,9 @@ import inspect
+@@ -46,7 +46,10 @@ import inspect
  import json
  import logging
  import os
 +import re
+ import shutil
 +import subprocess
 +import sys
  import time
  import uuid
  from collections.abc import AsyncIterator, Awaitable, Callable
-@@ -68,6 +71,14 @@ from pydantic import BaseModel
+@@ -69,6 +72,14 @@ from pydantic import BaseModel
  
  from omlx._version import __version__
  
@@ -592,8 +594,8 @@ index 7ba966c..422206a 100644
  from .api.anthropic_models import (
      MessagesRequest as AnthropicMessagesRequest,
  )
-@@ -474,6 +485,105 @@ def _reset_boundary_snapshots_for_server() -> None:
-         logger.warning("Failed to reset boundary snapshot directory: %s", exc)
+@@ -503,6 +514,105 @@ def _remove_legacy_ced_ssd_cache_for_server() -> None:
+     logger.info("Removed legacy CED SSD cache directory: %s", legacy_dir)
  
  
 +def _on_battery_power() -> bool | None:
@@ -698,7 +700,7 @@ index 7ba966c..422206a 100644
  @asynccontextmanager
  async def lifespan(app: FastAPI):
      """FastAPI lifespan for startup/shutdown events."""
-@@ -697,6 +807,73 @@ async def lifespan(app: FastAPI):
+@@ -727,6 +837,73 @@ async def lifespan(app: FastAPI):
  
          ttl_task = asyncio.create_task(_ttl_check_loop())
  
@@ -772,7 +774,7 @@ index 7ba966c..422206a 100644
      # Initialize MCP if config provided
      # Priority: env var > settings.json
      mcp_config = os.environ.get("OMLX_MCP_CONFIG")
-@@ -747,6 +924,10 @@ async def lifespan(app: FastAPI):
+@@ -780,6 +957,10 @@ async def lifespan(app: FastAPI):
              await ttl_task
          except asyncio.CancelledError:
              pass
@@ -784,7 +786,7 @@ index 7ba966c..422206a 100644
          await _server_state.process_memory_enforcer.stop()
          if _server_state.engine_pool is not None:
 diff --git a/omlx/settings.py b/omlx/settings.py
-index 5494305..06be88d 100644
+index c66059df..b67791a2 100644
 --- a/omlx/settings.py
 +++ b/omlx/settings.py
 @@ -25,6 +25,7 @@ import json
@@ -907,10 +909,10 @@ index 5494305..06be88d 100644
  
 diff --git a/tests/test_power_states.py b/tests/test_power_states.py
 new file mode 100644
-index 0000000..0e8453c
+index 00000000..1b5f3dfb
 --- /dev/null
 +++ b/tests/test_power_states.py
-@@ -0,0 +1,362 @@
+@@ -0,0 +1,364 @@
 +# SPDX-License-Identifier: Apache-2.0
 +"""Tests for the power-aware serving states (battery and lid)."""
 +
@@ -979,6 +981,7 @@ index 0000000..0e8453c
 +        self.last_access = time.time() if last_access is None else last_access
 +        self._active = active
 +        self.model_id = "m"
++        self.model_format = None
 +
 +
 +class _Pool:
@@ -1050,6 +1053,7 @@ index 0000000..0e8453c
 +        self._paused = False
 +        self._entries = {"m": _Entry()}
 +        self._lock = asyncio.Lock()
++        self._settings_manager = None
 +
 +    async def _reloadable_failed_engine(self, model_id):
 +        return None
@@ -1274,7 +1278,7 @@ index 0000000..0e8453c
 +        assert pool.paused is True
 +        assert pool.unload_calls == [(0.0, True)]
 diff --git a/tests/test_settings.py b/tests/test_settings.py
-index 896698d..35f781b 100644
+index c1dbb850..6b2851e5 100644
 --- a/tests/test_settings.py
 +++ b/tests/test_settings.py
 @@ -29,6 +29,7 @@ from omlx.settings import (

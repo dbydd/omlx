@@ -4,11 +4,14 @@
 The stock classes regrow by concatenation, so every 256-token step, merge,
 join and filter copies the whole bank. These methods keep the stock logical
 layout (``_width``) inside a larger buffer that grows on a ratio ladder.
+A filter that drops no common padding refills freed rows from the last rows,
+and a later join writes into those spare rows (``_rows``) in place.
 Prefix restore builds mlx-lm caches even for VLM models, so both backends are
 patched in place. Capacity layout adapted from PR #4030.
 """
 
 import mlx.core as mx
+from mlx_lm.generate import GenerationBatch
 from mlx_lm.models.cache import BatchKVCache as LMBatchKVCache
 from mlx_lm.models.cache import KVCache as LMKVCache
 from mlx_vlm.models.cache import BatchKVCache, KVCache, dynamic_roll
@@ -42,6 +45,10 @@ def _ladder_capacity(needed: int, step: int) -> int:
     return ((needed + 2 * grain - 1) // grain) * grain
 
 
+# A join that moves the live rows right copies them in this many column chunks.
+_SHIFT_CHUNKS = 8
+
+
 def _logical_kv(cache):
     """``(keys, values)`` cut to the stock (concatenate) width."""
     keys, values = cache.keys, cache.values
@@ -52,23 +59,53 @@ def _logical_kv(cache):
 
 
 class _CapacityMethods:
+    # Live rows when the bank has spare rows, else None.
+    _rows = None
+
     @property
     def keys(self):
-        return self._keys
+        if self._rows is None or self._keys is None:
+            return self._keys
+        return self._keys[: self._rows]
 
     @keys.setter
     def keys(self, value):
-        self._keys = value
-        self._width = None
+        self._set_bank("_keys", value)
+        self._drop_spare_rows("_values")
 
     @property
     def values(self):
-        return self._values
+        if self._rows is None or self._values is None:
+            return self._values
+        return self._values[: self._rows]
 
     @values.setter
     def values(self, value):
-        self._values = value
-        self._width = None
+        self._set_bank("_values", value)
+        self._drop_spare_rows("_keys")
+
+    def _set_bank(self, name: str, value) -> None:
+        """Adopt ``value`` as the bank; a same-width set keeps the logical width.
+
+        ``cache.keys = mx.depends(cache.keys, deps)`` writes back the whole bank,
+        spare columns included, and must not turn them into logical columns.
+        """
+        old = getattr(self, name, None)
+        if old is None or value is None or value.shape[2] != old.shape[2]:
+            self._width = None
+        setattr(self, name, value)
+
+    def _drop_spare_rows(self, partner: str) -> None:
+        """Cut the partner bank to the live rows when one bank is set alone.
+
+        ``cache.keys = mx.depends(cache.keys, deps)`` sets only the keys view.
+        """
+        if self._rows is None:
+            return
+        other = getattr(self, partner)
+        if other is not None:
+            setattr(self, partner, other[: self._rows])
+        self._rows = None
 
     def _logical_width(self) -> int:
         if self._width is not None:
@@ -77,7 +114,7 @@ class _CapacityMethods:
 
     def _grow(self, keys, values, base: int, width: int) -> None:
         """Match stock growth: keep ``[0, base)`` and zero-extend to ``width``."""
-        old_k, old_v = self._keys, self._values
+        old_k, old_v = self.keys, self.values
         batch_size, n_kv_heads, _, k_head_dim = keys.shape
         v_head_dim = values.shape[3]
         if old_k is not None and (
@@ -104,6 +141,7 @@ class _CapacityMethods:
                 ],
                 axis=2,
             )
+            self._width = None
             return
         capacity = 0 if old_k is None else int(old_k.shape[2])
         if width > capacity:
@@ -116,6 +154,7 @@ class _CapacityMethods:
                 new_k[..., :base, :] = old_k[..., :base, :]
                 new_v[..., :base, :] = old_v[..., :base, :]
             self._keys, self._values = new_k, new_v
+            self._rows = None
         # Columns past the old width are still zero, and the append that
         # triggered growth overwrites [base, old width).
         self._width = width
@@ -135,9 +174,14 @@ class _CapacityMethods:
 
         self.offset += keys.shape[2]
         self._idx += keys.shape[2]
-        self._keys[..., prev : self._idx, :] = keys
-        self._values[..., prev : self._idx, :] = values
-        return self._keys[..., : self._idx, :], self._values[..., : self._idx, :]
+        # Index the whole bank: a slice assignment into a live-row view copies it.
+        rows = slice(self._rows)
+        self._keys[rows, :, prev : self._idx, :] = keys
+        self._values[rows, :, prev : self._idx, :] = values
+        return (
+            self._keys[rows, :, : self._idx, :],
+            self._values[rows, :, : self._idx, :],
+        )
 
     def finalize(self):
         if self._right_padding is not None:
@@ -148,17 +192,18 @@ class _CapacityMethods:
             # Roll only the stock width; the zero tail stays in place.
             width = self._logical_width()
             self._keys = _roll_logical_prefix(
-                self._keys, padding[:, None], width, axis=2
+                self.keys, padding[:, None], width, axis=2
             )
             self._values = _roll_logical_prefix(
-                self._values, padding[:, None], width, axis=2
+                self.values, padding[:, None], width, axis=2
             )
+            self._rows = None
             self.offset -= padding
             self.left_padding += padding
             self._right_padding = None
 
     def filter(self, batch_indices):
-        """Keep the given rows, copying survivors once into a ladder bank."""
+        """Keep the given rows in place, or copy survivors once into a ladder bank."""
         kept = (
             batch_indices.tolist()
             if isinstance(batch_indices, mx.array)
@@ -172,18 +217,42 @@ class _CapacityMethods:
         # Shift left to reduce padding
         min_left_pad = self.left_padding.min().item() if kept else 0
         if self._keys is not None:
-            if kept:
-                self._compact_rows(kept, min_left_pad)
-            else:
+            if not kept:
                 self._keys = self._keys[batch_indices]
                 self._values = self._values[batch_indices]
+                self._rows = None
+            elif min_left_pad or not self._move_rows(kept):
+                self._compact_rows(kept, min_left_pad)
         if min_left_pad > 0:
             self._idx -= min_left_pad
             self.left_padding -= min_left_pad
 
+    def _move_rows(self, kept) -> bool:
+        """Refill freed rows in place from rows past ``len(kept)``.
+
+        Callers drop no padding here, so every cache class keeps the stock width.
+        False for other orders or when live rows would fill half the bank or less.
+        """
+        count = len(kept)
+        moves = [(dst, src) for dst, src in enumerate(kept) if src != dst]
+        if count * 2 <= int(self._keys.shape[0]) or any(
+            src < count for _, src in moves
+        ):
+            return False
+        if moves:
+            dst = mx.array([d for d, _ in moves])
+            src = mx.array([s for _, s in moves])
+            moved_k, moved_v = self._keys[src], self._values[src]
+            # A pending gather of the bank would make the scatter copy it.
+            mx.eval(moved_k, moved_v)
+            self._keys[dst] = moved_k
+            self._values[dst] = moved_v
+        self._rows = count if count < int(self._keys.shape[0]) else None
+        return True
+
     def _compact_rows(self, kept, start: int) -> None:
         """Keep rows ``kept`` and drop the first ``start`` columns."""
-        old_k, old_v = self._keys, self._values
+        old_k, old_v = self.keys, self.values
         if not start and kept == list(range(int(old_k.shape[0]))):
             return
         width = self._logical_width()
@@ -197,6 +266,7 @@ class _CapacityMethods:
             values[row : row + 1, :, :length] = old_v[old : old + 1, :, start:width]
         self._keys, self._values = keys, values
         self._width = length
+        self._rows = None
 
     def extend(self, other):
         """In-place extend this cache with the other cache."""
@@ -221,6 +291,8 @@ class _CapacityMethods:
             else mx.float32
         )
 
+        if self._extend_in_place(other, logical, max_idx, max_size):
+            return
         if self._extend_into_capacity(other, logical, max_idx, max_size):
             return
 
@@ -247,7 +319,69 @@ class _CapacityMethods:
         self.keys, self.values, self.offset, self.left_padding = map(
             mx.concatenate, zip(*(pad(self), pad(other)))
         )
+        self._width = None
         self._idx = max_idx
+
+    def _extend_in_place(self, other, logical, max_idx: int, max_size: int) -> bool:
+        """Write the stock join layout into the spare rows a filter left.
+
+        When ``other`` is longer, the stock layout moves the live rows right; they
+        move inside the bank. False when the rows, width or dtypes do not fit.
+        """
+        if self._keys is None or other.keys is None:
+            return False
+        keys, values = logical[id(other)]
+        live, new = int(self.keys.shape[0]), int(keys.shape[0])
+        for bank, part in ((self._keys, keys), (self._values, values)):
+            if (
+                live + new > int(bank.shape[0])
+                or max_size > int(bank.shape[2])
+                or part.dtype != bank.dtype
+                or part.shape[1] != bank.shape[1]
+                or part.shape[3] != bank.shape[3]
+            ):
+                return False
+        # The caller's view of this bank would make every write below copy it.
+        del logical[id(self)]
+        shift = max_idx - self._idx
+        if shift:
+            self._shift_right(live, shift, min(self._logical_width(), max_size - shift))
+        left = max_idx - other._idx
+        length = min(int(keys.shape[2]), max_size - left)
+        rows = slice(live, live + new)
+        for bank, part in ((self._keys, keys), (self._values, values)):
+            # Freed rows still hold old tokens.
+            bank[rows, :, :max_size] = 0
+            bank[rows, :, left : left + length] = part[..., :length, :]
+        self.offset = mx.concatenate([self.offset, other.offset])
+        self.left_padding = mx.concatenate(
+            [self.left_padding + shift, other.left_padding + left]
+        )
+        self._idx = max_idx
+        self._width = max_size
+        self._rows = live + new if live + new < int(self._keys.shape[0]) else None
+        return True
+
+    def _shift_right(self, live: int, shift: int, length: int) -> None:
+        """Move the first ``length`` columns of the live rows ``shift`` to the right.
+
+        Chunks go right to left, so no chunk reads columns that a write changed.
+        Each chunk is evaluated before its write, or the write copies the bank.
+        """
+        rows = slice(live)
+        chunk = max(1, -(-length // _SHIFT_CHUNKS))
+        for start in range((length - 1) // chunk * chunk, -1, -chunk):
+            end = min(start + chunk, length)
+            columns = mx.arange(start, end)
+            moved = [
+                mx.take(bank[rows], columns, axis=2)
+                for bank in (self._keys, self._values)
+            ]
+            mx.eval(moved)
+            for bank, part in zip((self._keys, self._values), moved):
+                bank[rows, :, start + shift : end + shift] = part
+        for bank in (self._keys, self._values):
+            bank[rows, :, :shift] = 0
 
     def _extend_into_capacity(self, other, logical, max_idx: int, max_size: int):
         """Write the stock join layout straight into a ladder bank.
@@ -287,6 +421,7 @@ class _CapacityMethods:
         self.left_padding = mx.concatenate(left_padding)
         self._keys, self._values = keys, values
         self._width = max_size
+        self._rows = None
         self._idx = max_idx
         return True
 
@@ -361,6 +496,31 @@ def _lm_state(cache):
 
 def _set_lm_state(cache, state):
     cache.keys, cache.values, cache.offset, cache.left_padding, cache._idx = state
+    cache._width = None
+
+
+def _refill_order(keep):
+    """Order sorted ``keep`` so each freed row below ``len(keep)`` takes a later row."""
+    count = len(keep)
+    kept = set(keep)
+    later = [row for row in keep if row >= count]
+    return [row if row in kept else later.pop() for row in range(count)]
+
+
+def _install_refill_order() -> None:
+    """Let a finished row's slot take a later row instead of shifting every row."""
+    if getattr(GenerationBatch, "_omlx_refill_order", False):
+        return
+    original = GenerationBatch.filter
+
+    def filter(self, keep, *args, **kwargs):
+        keep = list(keep)
+        if keep == sorted(keep):
+            keep = _refill_order(keep)
+        return original(self, keep, *args, **kwargs)
+
+    GenerationBatch.filter = filter
+    GenerationBatch._omlx_refill_order = True
 
 
 def install_capacity_methods(cls) -> None:
@@ -383,4 +543,5 @@ def apply_batch_kv_capacity_patch() -> bool:
     """Patch in place before cache creation; repeated installation is a no-op."""
     for cls in (BatchKVCache, LMBatchKVCache):
         install_capacity_methods(cls)
+    _install_refill_order()
     return True

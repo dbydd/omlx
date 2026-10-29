@@ -66,6 +66,7 @@ class _Entry:
         self.last_access = time.time() if last_access is None else last_access
         self._active = active
         self.model_id = "m"
+        self.model_format = None
 
 
 class _Pool:
@@ -137,6 +138,7 @@ class _Gate(EnginePool):
         self._paused = False
         self._entries = {"m": _Entry()}
         self._lock = asyncio.Lock()
+        self._settings_manager = None
 
     async def _reloadable_failed_engine(self, model_id):
         return None
